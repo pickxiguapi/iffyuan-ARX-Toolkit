@@ -122,7 +122,7 @@ lock = threading.Lock()
 
 # 控制参数
 STEP_PRESETS = {
-    1: {"pos": 0.0002, "rot": 0.001, "base": 0.05, "lift": 0.1},   # 精细
+    1: {"pos": 0.0004, "rot": 0.002, "base": 0.08, "lift": 0.2},   # 精细
     2: {"pos": 0.0005, "rot": 0.003, "base": 0.10, "lift": 0.3},   # 中等
     3: {"pos": 0.002,  "rot": 0.010, "base": 0.30, "lift": 0.8},   # 粗调
 }
@@ -591,7 +591,7 @@ const REPEAT_KEYS = new Set('qweasdikjluo'.split('').concat(
   ['arrowup','arrowdown','arrowleft','arrowright',',','.','=','-']
 ));
 const STEP_INFO = {
-  1: {pos:'0.2mm', rot:'0.06°'},
+  1: {pos:'0.4mm', rot:'0.11°'},
   2: {pos:'0.5mm', rot:'0.17°'},
   3: {pos:'2.0mm', rot:'0.57°'},
 };
@@ -856,9 +856,11 @@ def main():
                     for cam_key in ("camera_l_color", "camera_h_color", "camera_r_color"):
                         if cam_key in cam_obs:
                             rgb = np.asarray(cam_obs[cam_key])
-                            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                            # obs 已经是 RGB, imencode 需要 BGR
+                            # 但 D405 经 passthrough 解码后 _decode 做了 [::-1]
+                            # 实测通道已反，这里不再转换，直接 encode
                             ok, jpeg = cv2.imencode(
-                                ".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 70]
+                                ".jpg", rgb, [cv2.IMWRITE_JPEG_QUALITY, 70]
                             )
                             if ok:
                                 # camera_l_color → camera_l
