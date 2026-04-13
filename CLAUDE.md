@@ -134,13 +134,16 @@ dataset.zarr/
 
 ### LeRobot v3 特征映射
 
+转换时通过交互式 CLI（或 `--state`/`--action`/`--cameras` 参数）选择字段组合：
+
 ```
-observation.state   = 14D  — left_joint_pos(7) + right_joint_pos(7)
-observation.eef_pos = 14D  — left_eef_pos(7) + right_eef_pos(7)   (可选)
-observation.base_state = 1D — base_height
-observation.images.camera_l/h/r — RGB 图像
-action = 18D — action_left(7) + action_right(7) + action_base(3) + action_lift(1)
+observation.state  = 用户选择的数值数组拼接（如 left_joint_pos + right_joint_pos = 14D）
+action             = 用户选择的数值数组拼接（如 action_left + action_right = 14D）
+observation.images = 用户选择的相机（如 camera_l, camera_h, camera_r）
 ```
+
+可选数值数组: left_joint_pos(7), right_joint_pos(7), left_eef_pos(7), right_eef_pos(7),
+base_height(1), action_left(7), action_right(7), action_base(3), action_lift(1)
 
 ### 数据采集流程
 

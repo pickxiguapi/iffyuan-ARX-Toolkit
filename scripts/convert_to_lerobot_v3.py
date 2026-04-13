@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 """Zarr → LeRobot v3 数据集转换脚本 (ARX LIFT2).
 
-将 arx_toolkit Collector 采集的 Zarr 数据集转换为 LeRobot v3.0 格式。
-
-特征映射::
-
-    observation.state  = 14D  — concat [left_joint_pos(7) + right_joint_pos(7)]
-    observation.eef_pos = 14D — concat [left_eef_pos(7) + right_eef_pos(7)]  (可选)
-    observation.base_state = 1D — base_height
-    observation.images.camera_l/h/r — RGB 图像
-    action = 18D — concat [action_left(7) + action_right(7) + action_base(3) + action_lift(1)]
+支持交互式选择 observation.state / action / cameras 的字段组合，
+也支持通过 CLI 参数直传（跳过交互）。
 
 用法::
 
+    # 交互模式 — 运行后按提示选择字段
     python scripts/convert_to_lerobot_v3.py \
         --zarr datasets/pick_cup.zarr \
         --output lerobot_datasets/pick_cup \
         --repo-id iffyuan/arx_pick_cup \
-        --task "pick up the cup" \
-        --fps 50 \
-        --use-videos
+        --task "pick up the cup" --fps 30
 
-    # dry-run (只检查映射逻辑，不写入)
+    # 非交互模式 — CLI 直传
     python scripts/convert_to_lerobot_v3.py \
         --zarr datasets/pick_cup.zarr \
-        --dry-run
+        --output lerobot_datasets/pick_cup \
+        --repo-id iffyuan/arx_pick_cup \
+        --task "pick up the cup" --fps 30 \
+        --state left_joint_pos,right_joint_pos \
+        --action action_left,action_right \
+        --cameras camera_l,camera_h,camera_r
+
+    # dry-run — 只列出 Zarr 中的数组
+    python scripts/convert_to_lerobot_v3.py \
+        --zarr datasets/pick_cup.zarr --dry-run
 """
 
 from __future__ import annotations
@@ -38,6 +39,29 @@ from pathlib import Path
 import numpy as np
 
 
+# ---------------------------------------------------------------------------
+# 常量
+# ---------------------------------------------------------------------------
+
+# 排除列表：这些 key 不参与 state / action 选择
+_EXCLUDE_KEYS = {"timestamp", "episode"}
+_IMAGE_PREFIXES = ("rgb_", "depth_")
+
+
+def _is_numeric_array(key: str) -> bool:
+    """判断 key 是否为可选数值数组（排除图像和 metadata）."""
+    if key in _EXCLUDE_KEYS:
+        return False
+    for prefix in _IMAGE_PREFIXES:
+        if key.startswith(prefix):
+            return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# 依赖检查
+# ---------------------------------------------------------------------------
+
 def _check_deps():
     missing = []
     for pkg in ("zarr", "lerobot", "PIL"):
@@ -50,6 +74,10 @@ def _check_deps():
         print("  pip install -e '.[lerobot]'")
         sys.exit(1)
 
+
+# ---------------------------------------------------------------------------
+# Episode 工具
+# ---------------------------------------------------------------------------
 
 def _get_episode_ranges(
     data_group,
@@ -83,79 +111,235 @@ def _get_episode_ranges(
     return ranges
 
 
+# ---------------------------------------------------------------------------
+# Zarr 探测
+# ---------------------------------------------------------------------------
+
+def _discover_arrays(data_group) -> tuple[list[tuple[str, tuple, str]], list[str]]:
+    """扫描 Zarr data/ 组，返回 (数值数组列表, 相机名列表).
+
+    Returns
+    -------
+    numeric_arrays : list of (key, shape, dtype_str)
+    camera_names   : list of str  (不含 rgb_ 前缀，e.g. "camera_l")
+    """
+    numeric_arrays: list[tuple[str, tuple, str]] = []
+    camera_set: set[str] = set()
+
+    for key in sorted(data_group.keys()):
+        arr = data_group[key]
+        if _is_numeric_array(key):
+            numeric_arrays.append((key, arr.shape, str(arr.dtype)))
+        elif key.startswith("rgb_"):
+            cam_name = key[4:]  # strip "rgb_"
+            camera_set.add(cam_name)
+
+    camera_names = sorted(camera_set)
+    return numeric_arrays, camera_names
+
+
+# ---------------------------------------------------------------------------
+# 交互式选择
+# ---------------------------------------------------------------------------
+
+def _print_header(zarr_path: str, n_eps: int, n_frames: int):
+    print(f"\n=== Zarr 数据集: {zarr_path} ===")
+    print(f"Episodes: {n_eps}, 总帧数: {n_frames}\n")
+
+
+def _print_numeric_arrays(arrays: list[tuple[str, tuple, str]]):
+    print("  可用数组:")
+    for idx, (key, shape, dtype) in enumerate(arrays):
+        print(f"    [{idx}] {key:25s} {str(shape):20s} {dtype}")
+
+
+def _print_cameras(cameras: list[str], data_group):
+    print("\n  相机:")
+    labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    for i, cam in enumerate(cameras):
+        rgb_key = f"rgb_{cam}"
+        shape = data_group[rgb_key].shape if rgb_key in data_group else "?"
+        label = labels[i] if i < len(labels) else str(i)
+        print(f"    [{label}] {cam:25s} {str(shape)}")
+
+
+def _parse_numeric_selection(
+    raw: str,
+    arrays: list[tuple[str, tuple, str]],
+    label: str,
+) -> list[str]:
+    """解析用户输入的编号（逗号分隔），返回选中的 key 列表."""
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    selected: list[str] = []
+    for p in parts:
+        try:
+            idx = int(p)
+        except ValueError:
+            print(f"  [ERROR] 无效编号 '{p}'，请重新输入")
+            return []
+        if idx < 0 or idx >= len(arrays):
+            print(f"  [ERROR] 编号 {idx} 超出范围 [0, {len(arrays) - 1}]")
+            return []
+        selected.append(arrays[idx][0])
+    if not selected:
+        print(f"  [ERROR] {label} 至少选择一个数组")
+    return selected
+
+
+def _parse_camera_selection(
+    raw: str,
+    cameras: list[str],
+) -> list[str]:
+    """解析相机选择（字母或编号，直接回车=全选）."""
+    if not raw.strip():
+        return list(cameras)  # 全选
+
+    labels = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    parts = [p.strip().upper() for p in raw.split(",") if p.strip()]
+    selected: list[str] = []
+    for p in parts:
+        # 尝试字母标签
+        if len(p) == 1 and p in labels:
+            idx = labels.index(p)
+        else:
+            try:
+                idx = int(p)
+            except ValueError:
+                print(f"  [ERROR] 无效输入 '{p}'")
+                return []
+        if idx < 0 or idx >= len(cameras):
+            print(f"  [ERROR] 编号 {idx} 超出范围")
+            return []
+        selected.append(cameras[idx])
+    return selected
+
+
+def _calc_dim(keys: list[str], data_group) -> int:
+    """计算选中 key 拼接后的总维度."""
+    total = 0
+    for key in keys:
+        shape = data_group[key].shape
+        dim = shape[1] if len(shape) > 1 else 1
+        total += dim
+    return total
+
+
+def _format_selection(keys: list[str], data_group) -> str:
+    """格式化选中内容，例如 'left_joint_pos(7) + right_joint_pos(7)'."""
+    parts = []
+    for key in keys:
+        shape = data_group[key].shape
+        dim = shape[1] if len(shape) > 1 else 1
+        parts.append(f"{key}({dim})")
+    return " + ".join(parts)
+
+
+def interactive_select(
+    data_group,
+    numeric_arrays: list[tuple[str, tuple, str]],
+    camera_names: list[str],
+) -> tuple[list[str], list[str], list[str]]:
+    """交互式选择 state / action / cameras，返回三个 key 列表."""
+
+    _print_numeric_arrays(numeric_arrays)
+    _print_cameras(camera_names, data_group)
+
+    # --- Step 1: state ---
+    print("\nStep 1: 选择 observation.state 的组成")
+    while True:
+        raw = input("  输入编号（逗号分隔）: ").strip()
+        state_keys = _parse_numeric_selection(raw, numeric_arrays, "state")
+        if state_keys:
+            dim = _calc_dim(state_keys, data_group)
+            desc = _format_selection(state_keys, data_group)
+            print(f"  → state = {desc} = {dim}D\n")
+            break
+
+    # --- Step 2: action ---
+    print("Step 2: 选择 action 的组成")
+    while True:
+        raw = input("  输入编号（逗号分隔）: ").strip()
+        action_keys = _parse_numeric_selection(raw, numeric_arrays, "action")
+        if action_keys:
+            dim = _calc_dim(action_keys, data_group)
+            desc = _format_selection(action_keys, data_group)
+            print(f"  → action = {desc} = {dim}D\n")
+            break
+
+    # --- Step 3: cameras ---
+    print("Step 3: 选择相机（直接回车=全选）")
+    while True:
+        raw = input("  输入编号（逗号分隔）: ").strip()
+        cam_keys = _parse_camera_selection(raw, camera_names)
+        if cam_keys:
+            print(f"  → cameras = {', '.join(cam_keys)}\n")
+            break
+
+    # --- 确认 ---
+    state_dim = _calc_dim(state_keys, data_group)
+    action_dim = _calc_dim(action_keys, data_group)
+    state_names = " + ".join(state_keys)
+    action_names = " + ".join(action_keys)
+
+    print("确认:")
+    print(f"  observation.state = {state_dim}D ({state_names})")
+    print(f"  action            = {action_dim}D ({action_names})")
+    print(f"  images            = {', '.join(cam_keys)}")
+
+    confirm = input("  继续? [Y/n] ").strip().lower()
+    if confirm and confirm != "y":
+        print("[ABORT] 已取消")
+        sys.exit(0)
+
+    return state_keys, action_keys, cam_keys
+
+
+# ---------------------------------------------------------------------------
+# dry-run
+# ---------------------------------------------------------------------------
+
 def dry_run(zarr_path: str, max_episodes: int | None = None):
-    """只读取 Zarr 并打印映射信息，不做任何转换."""
+    """只读取 Zarr 并打印可用数组信息."""
     import zarr
 
     store = zarr.open(str(zarr_path), "r")
     data = store["data"]
     meta = store["meta"]
 
-    print(f"\n{'=' * 60}")
-    print(f"  Zarr 数据集: {zarr_path}")
-    print(f"{'=' * 60}")
-
-    # List all arrays
-    print("\n  [data/ 数组]")
-    for key in sorted(data.keys()):
-        arr = data[key]
-        print(f"    {key:25s} shape={arr.shape} dtype={arr.dtype}")
-
-    # Episode info
     ep_ranges = _get_episode_ranges(data, meta, max_episodes)
     n_eps = len(ep_ranges)
     n_frames = sum(end - start for start, end in ep_ranges)
-    print(f"\n  Episodes: {n_eps}, 总帧数: {n_frames}")
 
-    # Check required keys
-    required = [
-        "left_joint_pos", "right_joint_pos",
-        "action_left", "action_right", "action_base", "action_lift",
-    ]
-    camera_keys = [f"rgb_{cam}" for cam in ("camera_l", "camera_h", "camera_r")]
+    numeric_arrays, camera_names = _discover_arrays(data)
 
-    print("\n  [特征映射]")
-    print(f"    observation.state   = left_joint_pos(7) + right_joint_pos(7) = 14D")
-    print(f"    action              = action_left(7) + action_right(7) + action_base(3) + action_lift(1) = 18D")
-    print(f"    observation.images  = camera_l, camera_h, camera_r")
+    _print_header(zarr_path, n_eps, n_frames)
+    _print_numeric_arrays(numeric_arrays)
+    _print_cameras(camera_names, data)
 
-    missing = [k for k in required + camera_keys if k not in data]
-    if missing:
-        print(f"\n  ⚠ 缺少数组: {missing}")
-    else:
-        print(f"\n  ✓ 所有必需数组已就绪")
+    print(f"\n  [data/ 全部数组]")
+    for key in sorted(data.keys()):
+        arr = data[key]
+        print(f"    {key:25s} shape={str(arr.shape):20s} dtype={arr.dtype}")
 
-    # Optional keys
-    optional = {
-        "left_eef_pos": "observation.eef_pos[:7]",
-        "right_eef_pos": "observation.eef_pos[7:14]",
-        "base_height": "observation.base_state",
-    }
-    for key, target in optional.items():
-        status = "✓" if key in data else "✗ (缺失)"
-        print(f"    {key:25s} → {target:30s} {status}")
+    print()
 
-    # Sample first frame
-    if n_frames > 0:
-        print(f"\n  [首帧采样]")
-        for key in required:
-            if key in data:
-                print(f"    {key}: {data[key][0]}")
 
-    print(f"\n{'=' * 60}\n")
-
+# ---------------------------------------------------------------------------
+# 转换核心
+# ---------------------------------------------------------------------------
 
 def convert(
     zarr_path: str,
     output_dir: str,
     repo_id: str,
+    state_keys: list[str],
+    action_keys: list[str],
+    camera_names: list[str],
     fps: int = 30,
     robot_type: str = "arx_lift2",
     task_name: str | None = None,
     max_episodes: int | None = None,
     use_videos: bool = False,
-    include_eef: bool = True,
-    include_base_state: bool = True,
 ):
     """执行 Zarr → LeRobot v3 转换."""
     import zarr
@@ -174,15 +358,23 @@ def convert(
     data = store["data"]
     meta = store["meta"]
 
-    # Detect image shape from first camera
-    _, C, H, W = data["rgb_camera_l"].shape
-    image_shape = (H, W, C)
-    print(f"[INFO] 图像尺寸: {W}×{H}")
-
     ep_ranges = _get_episode_ranges(data, meta, max_episodes)
     n_eps = len(ep_ranges)
     n_frames = sum(end - start for start, end in ep_ranges)
+
+    # --- 计算维度 ---
+    state_dim = _calc_dim(state_keys, data)
+    action_dim = _calc_dim(action_keys, data)
+
+    # --- 图像尺寸 (从第一个相机获取) ---
+    first_cam_key = f"rgb_{camera_names[0]}"
+    _, C, H, W = data[first_cam_key].shape
+    image_shape = (H, W, C)
+    print(f"[INFO] 图像尺寸: {W}×{H}")
     print(f"[INFO] Episodes: {n_eps}, 总帧数: {n_frames}")
+    print(f"[INFO] state = {state_dim}D ({' + '.join(state_keys)})")
+    print(f"[INFO] action = {action_dim}D ({' + '.join(action_keys)})")
+    print(f"[INFO] cameras = {', '.join(camera_names)}")
 
     # --- Prepare output ---
     output_path = Path(output_dir).resolve()
@@ -194,38 +386,21 @@ def convert(
     features = {
         "observation.state": {
             "dtype": "float32",
-            "shape": (14,),
+            "shape": (state_dim,),
             "names": ["state"],
         },
         "action": {
             "dtype": "float32",
-            "shape": (18,),
+            "shape": (action_dim,),
             "names": ["actions"],
         },
     }
 
-    # 3 camera images
-    for cam in ("camera_l", "camera_h", "camera_r"):
+    for cam in camera_names:
         features[f"observation.images.{cam}"] = {
             "dtype": "image",
             "shape": image_shape,
             "names": ["height", "width", "channel"],
-        }
-
-    # Optional: eef pos
-    if include_eef and "left_eef_pos" in data:
-        features["observation.eef_pos"] = {
-            "dtype": "float32",
-            "shape": (14,),
-            "names": ["eef_pos"],
-        }
-
-    # Optional: base state
-    if include_base_state and "base_height" in data:
-        features["observation.base_state"] = {
-            "dtype": "float32",
-            "shape": (1,),
-            "names": ["base_state"],
         }
 
     print(f"[INFO] 创建 LeRobot 数据集: repo_id={repo_id}, fps={fps}")
@@ -243,75 +418,44 @@ def convert(
         image_writer_threads=4,
     )
 
+    # --- 预读辅助函数 ---
+    def _read_and_concat(keys: list[str], start: int, end: int) -> np.ndarray:
+        """批量读取 keys 并按列拼接，返回 (L, D) float32."""
+        arrays = []
+        for key in keys:
+            arr = data[key][start:end].astype(np.float32)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
+            arrays.append(arr)
+        return np.concatenate(arrays, axis=1)
+
     # --- Convert episode by episode ---
     t0 = time.time()
 
     for ep_idx, (start, end) in enumerate(ep_ranges):
         ep_len = end - start
-        print(f"  Episode {ep_idx}: frames [{start}, {end}) = {ep_len} steps")
+        print(f"  Episode {ep_idx}: {ep_len} steps")
 
-        # Batch read
-        left_jp = data["left_joint_pos"][start:end]    # (L, 7)
-        right_jp = data["right_joint_pos"][start:end]   # (L, 7)
-        act_l = data["action_left"][start:end]           # (L, 7)
-        act_r = data["action_right"][start:end]          # (L, 7)
-        act_b = data["action_base"][start:end]           # (L, 3)
-        act_lift = data["action_lift"][start:end]        # (L, 1)
+        # Batch read state & action
+        state_batch = _read_and_concat(state_keys, start, end)   # (L, state_dim)
+        action_batch = _read_and_concat(action_keys, start, end)  # (L, action_dim)
 
-        # Camera batches
-        rgb_l = data["rgb_camera_l"][start:end]  # (L, 3, H, W)
-        rgb_h = data["rgb_camera_h"][start:end]
-        rgb_r = data["rgb_camera_r"][start:end]
-
-        # Optional batches
-        has_eef = include_eef and "left_eef_pos" in data
-        if has_eef:
-            left_eef = data["left_eef_pos"][start:end]   # (L, 7)
-            right_eef = data["right_eef_pos"][start:end]  # (L, 7)
-
-        has_base = include_base_state and "base_height" in data
-        if has_base:
-            base_h = data["base_height"][start:end]  # (L, 1)
+        # Batch read cameras
+        cam_batches = {}
+        for cam in camera_names:
+            cam_batches[cam] = data[f"rgb_{cam}"][start:end]  # (L, C, H, W)
 
         for i in range(ep_len):
-            # observation.state = 14D
-            state = np.concatenate([
-                left_jp[i].astype(np.float32),
-                right_jp[i].astype(np.float32),
-            ])  # (14,)
-
-            # action = 18D
-            action_vec = np.concatenate([
-                act_l[i].astype(np.float32),
-                act_r[i].astype(np.float32),
-                act_b[i].astype(np.float32),
-                act_lift[i].astype(np.float32).reshape(-1),
-            ])  # (18,)
-
-            # Images: (C, H, W) → (H, W, C) → PIL
-            img_l = Image.fromarray(rgb_l[i].transpose(1, 2, 0))
-            img_h = Image.fromarray(rgb_h[i].transpose(1, 2, 0))
-            img_r = Image.fromarray(rgb_r[i].transpose(1, 2, 0))
-
             frame = {
-                "observation.state": state,
-                "action": action_vec,
-                "observation.images.camera_l": img_l,
-                "observation.images.camera_h": img_h,
-                "observation.images.camera_r": img_r,
+                "observation.state": state_batch[i],
+                "action": action_batch[i],
                 "task": task_name,
             }
 
-            # Optional features
-            if has_eef:
-                eef_pos = np.concatenate([
-                    left_eef[i].astype(np.float32),
-                    right_eef[i].astype(np.float32),
-                ])  # (12,)
-                frame["observation.eef_pos"] = eef_pos
-
-            if has_base:
-                frame["observation.base_state"] = base_h[i].astype(np.float32).reshape(-1)
+            # Images: (C, H, W) → (H, W, C) → PIL
+            for cam in camera_names:
+                img = Image.fromarray(cam_batches[cam][i].transpose(1, 2, 0))
+                frame[f"observation.images.{cam}"] = img
 
             dataset.add_frame(frame)
 
@@ -323,16 +467,20 @@ def convert(
     print(f"[DONE] 转换完成!")
     print(f"  输出: {output_path}")
     print(f"  Episodes: {n_eps}, Frames: {n_frames}")
-    print(f"  Features: state(14D) + action(18D) + 3 cameras")
+    print(f"  state({state_dim}D) + action({action_dim}D) + {len(camera_names)} cameras")
     print(f"  耗时: {elapsed:.1f}s ({n_frames / max(elapsed, 0.1):.0f} frames/s)")
     print(f"{'=' * 60}")
 
     return dataset
 
 
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Zarr → LeRobot v3 数据集转换 (ARX LIFT2)",
+        description="Zarr → LeRobot v3 数据集转换 (ARX LIFT2) — 交互式选择 state/action",
     )
     parser.add_argument("--zarr", "-i", required=True, help="输入 Zarr 数据集路径")
     parser.add_argument("--output", "-o", default=None, help="LeRobot 输出目录")
@@ -344,12 +492,16 @@ def main():
                         help="只转换前 N 个 episode")
     parser.add_argument("--use-videos", action="store_true",
                         help="使用视频格式存储图像（推荐大数据集）")
-    parser.add_argument("--no-eef", action="store_true",
-                        help="不包含 eef_pos 特征")
-    parser.add_argument("--no-base-state", action="store_true",
-                        help="不包含 base_state 特征")
     parser.add_argument("--dry-run", action="store_true",
-                        help="只检查映射逻辑，不执行转换")
+                        help="只列出 Zarr 中的数组，不进入选择/转换")
+
+    # 非交互模式参数
+    parser.add_argument("--state", default=None,
+                        help="非交互: state 字段名（逗号分隔），如 left_joint_pos,right_joint_pos")
+    parser.add_argument("--action", default=None,
+                        help="非交互: action 字段名（逗号分隔），如 action_left,action_right")
+    parser.add_argument("--cameras", default=None,
+                        help="非交互: 相机名（逗号分隔），如 camera_l,camera_h,camera_r")
 
     args = parser.parse_args()
 
@@ -358,13 +510,15 @@ def main():
         print(f"[ERROR] 输入路径不存在: {args.zarr}")
         sys.exit(1)
 
+    # --- dry-run ---
     if args.dry_run:
-        import zarr  # only need zarr for dry-run
+        import zarr  # noqa: F811
         dry_run(str(zarr_path), max_episodes=args.episodes)
         return
 
-    # Need full deps for actual conversion
+    # --- 正式转换需要完整依赖 ---
     _check_deps()
+    import zarr
 
     if args.output is None:
         print("[ERROR] 请指定 --output 输出路径")
@@ -373,17 +527,67 @@ def main():
         print("[ERROR] 请指定 --repo-id")
         sys.exit(1)
 
+    # 打开 Zarr 进行探测
+    store = zarr.open(str(zarr_path), "r")
+    data = store["data"]
+    meta = store["meta"]
+
+    ep_ranges = _get_episode_ranges(data, meta, args.episodes)
+    n_eps = len(ep_ranges)
+    n_frames = sum(end - start for start, end in ep_ranges)
+
+    numeric_arrays, camera_names = _discover_arrays(data)
+
+    # --- 非交互 vs 交互 ---
+    if args.state is not None and args.action is not None:
+        # 非交互模式
+        state_keys = [k.strip() for k in args.state.split(",") if k.strip()]
+        action_keys = [k.strip() for k in args.action.split(",") if k.strip()]
+
+        if args.cameras is not None:
+            cam_keys = [k.strip() for k in args.cameras.split(",") if k.strip()]
+        else:
+            cam_keys = camera_names  # 默认全选
+
+        # 校验 key 存在
+        all_numeric_names = {a[0] for a in numeric_arrays}
+        for key in state_keys + action_keys:
+            if key not in all_numeric_names:
+                print(f"[ERROR] 数组 '{key}' 不存在于 Zarr data/ 中")
+                print(f"  可用: {sorted(all_numeric_names)}")
+                sys.exit(1)
+        for cam in cam_keys:
+            if cam not in camera_names:
+                print(f"[ERROR] 相机 '{cam}' 不存在")
+                print(f"  可用: {camera_names}")
+                sys.exit(1)
+
+        state_dim = _calc_dim(state_keys, data)
+        action_dim = _calc_dim(action_keys, data)
+        print(f"[INFO] 非交互模式")
+        print(f"  state  = {_format_selection(state_keys, data)} = {state_dim}D")
+        print(f"  action = {_format_selection(action_keys, data)} = {action_dim}D")
+        print(f"  cameras = {', '.join(cam_keys)}")
+    else:
+        # 交互模式
+        _print_header(str(zarr_path), n_eps, n_frames)
+        state_keys, action_keys, cam_keys = interactive_select(
+            data, numeric_arrays, camera_names,
+        )
+
+    print(f"\n转换中...")
     convert(
         zarr_path=str(zarr_path),
         output_dir=args.output,
         repo_id=args.repo_id,
+        state_keys=state_keys,
+        action_keys=action_keys,
+        camera_names=cam_keys,
         fps=args.fps,
         robot_type=args.robot_type,
         task_name=args.task,
         max_episodes=args.episodes,
         use_videos=args.use_videos,
-        include_eef=not args.no_eef,
-        include_base_state=not args.no_base_state,
     )
 
 
