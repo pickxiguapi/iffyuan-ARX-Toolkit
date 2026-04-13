@@ -715,66 +715,74 @@ if __name__ == "__main__":
     print("  left gripper (normalized):", obs["left_joint_pos"][6])
     print("  base_height:", obs["base_height"])
     print("  camera_h_color shape:", obs["camera_h_color"].shape)
+    _time.sleep(3.0)
 
     # ========== 2. step — 双臂 absolute_eef ==========
     obs = env.step({
-        "left":  np.array([0.1, 0, 0.15, 0, 0, 0, 0.0], dtype=np.float32),
-        "right": np.array([0.1, 0, 0.15, 0, 0, 0, 0.0], dtype=np.float32),
+        "left":  np.array([0.02, 0, 0.03, 0, 0, 0, 0.0], dtype=np.float32),
+        "right": np.array([0.02, 0, 0.03, 0, 0, 0, 0.0], dtype=np.float32),
         "base": None,
         "lift": None,
     })
     print("\n[step] 双臂 absolute_eef (gripper=0 全开)")
     print("  left_eef_pos:", obs["left_eef_pos"])
+    _time.sleep(3.0)
 
     # ========== 3. step — 单臂 + gripper 半闭合 ==========
     obs = env.step({
-        "left":  np.array([0.15, 0, 0.18, 0, 0, 0, 0.5], dtype=np.float32),
+        "left":  np.array([0.03, 0, 0.04, 0, 0, 0, 0.5], dtype=np.float32),
         "right": None,
         "base": None,
         "lift": None,
     })
     print("\n[step] 单臂左 (gripper=0.5 半闭合)")
     print("  left gripper:", obs["left_joint_pos"][6])
+    _time.sleep(3.0)
 
     # ========== 4. step — gripper 全闭 ==========
     obs = env.step({
-        "left":  np.array([0.15, 0, 0.18, 0, 0, 0, 1.0], dtype=np.float32),
+        "left":  np.array([0.03, 0, 0.04, 0, 0, 0, 1.0], dtype=np.float32),
         "right": None,
         "base": None,
         "lift": None,
     })
     print("\n[step] gripper=1.0 全闭")
     print("  left gripper:", obs["left_joint_pos"][6])
+    _time.sleep(3.0)
 
     # ========== 5. step_lift — 升降台 ==========
-    env.step_lift(18.0)
+    env.step_lift(3.0)
     obs = env.get_observation(include_camera=False)
-    print("\n[step_lift] height=18")
+    print("\n[step_lift] height=3")
     print("  base_height:", obs["base_height"])
+    _time.sleep(3.0)
 
     # ========== 6. step_base — 底盘前进 ==========
-    env.step_base(vx=0.3, vy=0, vz=0)
+    env.step_base(vx=0.1, vy=0, vz=0)
     _time.sleep(1.0)
     env.step_base(vx=0, vy=0, vz=0)  # 停
     print("\n[step_base] 前进 1s 后停止")
+    _time.sleep(3.0)
 
     # ========== 7. step_base_lift — 联合控制 ==========
-    env.step_base_lift(vx=0, vy=0, vz=0.5, height=10.0)
+    env.step_base_lift(vx=0, vy=0, vz=0.15, height=2.0)
     _time.sleep(1.0)
-    env.step_base_lift(vx=0, vy=0, vz=0, height=10.0)  # 停旋转
-    print("\n[step_base_lift] 旋转 + 升降到 10")
+    env.step_base_lift(vx=0, vy=0, vz=0, height=2.0)  # 停旋转
+    print("\n[step_base_lift] 旋转 + 升降到 2")
+    _time.sleep(3.0)
 
     # ========== 8. step — 底盘 + 升降 via unified action ==========
     obs = env.step({
         "left": None,
         "right": None,
-        "base": np.array([0.0, 0.3, 0.0], dtype=np.float32),
-        "lift": 5.0,
+        "base": np.array([0.0, 0.1, 0.0], dtype=np.float32),
+        "lift": 1.0,
     })
     _time.sleep(1.0)
     env.step_base(0, 0, 0)  # 停底盘
-    print("\n[step] 底盘横移 + 升降到 5")
+    print("\n[step] 底盘横移 + 升降到 1")
     print("  base_height:", obs["base_height"])
+    _time.sleep(3.0)
 
     # ========== 9. step — 全部 None (纯取观测) ==========
     obs = env.step({
@@ -782,6 +790,7 @@ if __name__ == "__main__":
     })
     print("\n[step] 全 None (纯观测)")
     print("  obs keys:", sorted(obs.keys()))
+    _time.sleep(3.0)
 
     # ========== 10. get_observation — 局部获取 ==========
     obs_arm = env.get_observation(include_camera=False, include_base=False)
@@ -789,14 +798,16 @@ if __name__ == "__main__":
 
     obs_cam = env.get_observation(include_arm=False, include_base=False)
     print("[get_observation] camera only keys:", sorted(obs_cam.keys()))
+    _time.sleep(3.0)
 
     # ========== 11. set_mode ==========
     env.set_mode(3, side="left")   # 左臂重力补偿
     print("\n[set_mode] 左臂 gravity 模式")
-    _time.sleep(2.0)
+    _time.sleep(3.0)
 
     env.set_mode(1, side="left")   # 左臂回零
     print("[set_mode] 左臂 home")
+    _time.sleep(3.0)
 
     # ========== 12. close ==========
     env.close()

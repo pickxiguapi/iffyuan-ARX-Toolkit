@@ -18,7 +18,7 @@ print("left gripper:", obs["left_joint_pos"][6])  # 0=开, 1=闭
 
 # step：左臂移动 + gripper 全开
 obs = env.step({
-    "left":  np.array([0.1, 0, 0.15, 0, 0, 0, 0.0]),
+    "left":  np.array([0.02, 0, 0.03, 0, 0, 0, 0.0]),
     "right": None,
     "base":  None,
     "lift":  None,
