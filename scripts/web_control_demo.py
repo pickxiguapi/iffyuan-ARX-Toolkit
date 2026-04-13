@@ -188,6 +188,9 @@ def handle_key(key: str) -> dict:
         if key in base_map:
             obs = env.step({"left": None, "right": None, "base": base_map[key], "lift": None})
             return _status("ok", f"底盘 {key}")
+        if key == "base_stop":
+            obs = env.step({"left": None, "right": None, "base": np.array([0, 0, 0]), "lift": None})
+            return _status("ok", "底盘停")
 
         # --- 升降控制 ---
         lift_step = sp["lift"]
@@ -596,6 +599,8 @@ const STEP_INFO = {
   3: {pos:'2.0mm', rot:'0.57°'},
 };
 
+const BASE_KEYS = new Set(['arrowup','arrowdown','arrowleft','arrowright',',','.']);
+
 function send(key) {
   fetch('/cmd', {
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -706,6 +711,11 @@ document.addEventListener('keyup', e => {
     clearTimeout(repeatTimers[mapped]);
     clearInterval(repeatTimers[mapped]);
     delete repeatTimers[mapped];
+  }
+
+  // 底盘键松开 → 立即发零速停车
+  if (BASE_KEYS.has(mapped)) {
+    send('base_stop');
   }
 });
 
