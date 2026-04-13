@@ -130,10 +130,28 @@ class LeaderFollowerTeleop:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._prev_cmd: Optional[np.ndarray] = None  # last command sent
+        self._last_command: Optional[dict] = None  # exposed for Collector
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    @property
+    def last_command(self) -> Optional[dict]:
+        """Last action dict sent to the follower (for Collector to read).
+
+        Returns a dict in the same format as ``ARXEnv.step(action)``::
+
+            {
+                "left":  np.ndarray(7,) | None,
+                "right": np.ndarray(7,) | None,
+                "base":  None,
+                "lift":  None,
+            }
+
+        Returns ``None`` if teleop has not yet produced any command.
+        """
+        return self._last_command
 
     def start(self) -> None:
         """Set leader arm to gravity mode and launch the control thread."""
@@ -251,3 +269,11 @@ class LeaderFollowerTeleop:
         # Send to follower via the env internal method (bypasses validate + obs)
         self.env._apply_absolute_joint({self.follower_side: cmd})
         self._prev_cmd = cmd.copy()
+
+        # Expose for Collector
+        self._last_command = {
+            "left": cmd.copy() if self.follower_side == "left" else None,
+            "right": cmd.copy() if self.follower_side == "right" else None,
+            "base": None,
+            "lift": None,
+        }

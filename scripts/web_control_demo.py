@@ -44,16 +44,16 @@ class MockARXEnv:
     """Fake env that mimics ARXEnv interface for UI development."""
 
     def __init__(self, **_kw):
-        self._left_eef = np.array([0.15, 0.0, 0.20, 0.0, 0.0, 0.0], dtype=np.float64)
-        self._right_eef = np.array([0.15, 0.0, 0.20, 0.0, 0.0, 0.0], dtype=np.float64)
+        self._left_eef = np.array([0.15, 0.0, 0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self._right_eef = np.array([0.15, 0.0, 0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self._left_joint = np.zeros(7, dtype=np.float64)
         self._right_joint = np.zeros(7, dtype=np.float64)
         self._base_height = 0.0
         print("[MockARXEnv] 初始化完成 (模拟模式, 无真机连接)")
 
     def reset(self):
-        self._left_eef = np.array([0.15, 0.0, 0.20, 0.0, 0.0, 0.0], dtype=np.float64)
-        self._right_eef = np.array([0.15, 0.0, 0.20, 0.0, 0.0, 0.0], dtype=np.float64)
+        self._left_eef = np.array([0.15, 0.0, 0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        self._right_eef = np.array([0.15, 0.0, 0.20, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self._left_joint = np.zeros(7, dtype=np.float64)
         self._right_joint = np.zeros(7, dtype=np.float64)
         self._base_height = 0.0

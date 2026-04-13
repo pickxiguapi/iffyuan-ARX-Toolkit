@@ -67,7 +67,7 @@ Observation — ``obs = env.reset()`` / ``env.step(action)``
 +---------------------+----------+----------------------------------------------+
 | key                 | shape    | description                                  |
 +=====================+==========+==============================================+
-| {side}_eef_pos      | (6,)     | [x, y, z, roll, pitch, yaw] end-effector     |
+| {side}_eef_pos      | (7,)     | [x, y, z, roll, pitch, yaw, gripper] end-eff  |
 +---------------------+----------+----------------------------------------------+
 | {side}_joint_pos    | (7,)     | 6 joint angles + gripper [0,1] normalized     |
 +---------------------+----------+----------------------------------------------+
@@ -429,12 +429,13 @@ class ARXEnv:
 
                 {
                     # ---- Left arm ----
-                    "left_eef_pos":    np.float32(6,),   # [x, y, z, roll, pitch, yaw]
+                    "left_eef_pos":    np.float32(7,),   # [x, y, z, roll, pitch, yaw, gripper]
+                                                         #  gripper normalized [0,1] (0=open, 1=closed)
                     "left_joint_pos":  np.float32(7,),   # [j0, j1, j2, j3, j4, j5, gripper]
                                                          #  gripper normalized [0,1] (0=open, 1=closed)
 
                     # ---- Right arm ----
-                    "right_eef_pos":   np.float32(6,),
+                    "right_eef_pos":   np.float32(7,),
                     "right_joint_pos": np.float32(7,),
 
                     # ---- Base / Lift ----
@@ -472,12 +473,15 @@ class ARXEnv:
             include_base=include_base,
         )
 
-        # Normalize gripper in joint_pos[6]: raw [-3.4, 0] -> [0, 1]
+        # Normalize gripper in joint_pos[6] and eef_pos[6]: raw [-3.4, 0] -> [0, 1]
         if include_arm:
             for side in ("left", "right"):
-                key = f"{side}_joint_pos"
-                if key in obs and obs[key].shape[0] >= 7:
-                    obs[key][6] = gripper_normalize(obs[key][6])
+                jp_key = f"{side}_joint_pos"
+                if jp_key in obs and obs[jp_key].shape[0] >= 7:
+                    obs[jp_key][6] = gripper_normalize(obs[jp_key][6])
+                eef_key = f"{side}_eef_pos"
+                if eef_key in obs and obs[eef_key].shape[0] >= 7:
+                    obs[eef_key][6] = gripper_normalize(obs[eef_key][6])
 
         if not obs:
             raise RuntimeError("Empty observation — is the robot connected?")

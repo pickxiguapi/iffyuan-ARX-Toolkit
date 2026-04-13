@@ -367,7 +367,10 @@ def build_observation(
             s = status_all.get(side)
             if s is None:
                 continue
-            obs[f"{side}_eef_pos"] = np.array(s.end_pos, dtype=np.float32)
+            obs[f"{side}_eef_pos"] = np.concatenate([
+                np.array(s.end_pos, dtype=np.float32),
+                np.array([s.joint_pos[6] if len(s.joint_pos) > 6 else 0.0], dtype=np.float32),
+            ])  # (7,): [x, y, z, r, p, y, gripper_raw]
             obs[f"{side}_joint_pos"] = np.array(s.joint_pos, dtype=np.float32)
 
     if include_base and isinstance(status_all, dict):
