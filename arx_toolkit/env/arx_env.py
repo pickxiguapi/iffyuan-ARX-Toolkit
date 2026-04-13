@@ -693,7 +693,7 @@ class ARXEnv:
             Observation dict after reset.
         """
         logger.info("Resetting ...")
-        time.sleep(2.0)
+        time.sleep(1.5)
 
         self._go_home(side="both")
         self.step_lift(0.0)
