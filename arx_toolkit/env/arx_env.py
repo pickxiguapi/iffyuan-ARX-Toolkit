@@ -226,24 +226,38 @@ class ARXEnv:
         logger.info("ROS2 node started.")
 
     def _shutdown_ros2(self):
-        """Stop ROS2 node and executor."""
+        """Stop ROS2 node and executor, release all resources."""
         import rclpy
 
+        # 1. Stop video saver first (flushes pending frames)
         if getattr(self, "node", None) is not None:
             try:
                 self.node.stop_saver()
             except Exception:
                 pass
-            self.node.destroy_node()
-            self.node = None
+
+        # 2. Shutdown executor (stops spinning) before destroying node
         if getattr(self, "executor", None) is not None:
             self.executor.shutdown()
             self.executor = None
+
+        # 3. Wait for executor thread to finish
         if getattr(self, "_executor_thread", None) is not None:
-            self._executor_thread.join(timeout=2.0)
+            self._executor_thread.join(timeout=3.0)
             self._executor_thread = None
-        if rclpy.ok():
-            rclpy.shutdown()
+
+        # 4. Now safe to destroy node
+        if getattr(self, "node", None) is not None:
+            self.node.destroy_node()
+            self.node = None
+
+        # 5. Finally shutdown rclpy context
+        try:
+            if rclpy.ok():
+                rclpy.shutdown()
+        except Exception:
+            pass  # already shutdown or never inited
+
         logger.info("ROS2 shutdown.")
 
     # ------------------------------------------------------------------
@@ -645,9 +659,16 @@ class ARXEnv:
             pass
         return cmd
 
-    def _go_home(self, side: Side = "both"):
-        """Move arm(s) to initial pose [0, 0, 0, 0, 0, 0, 0]."""
+    def _go_home(self, side: Side = "both", close_gripper: bool = True):
+        """Move arm(s) to initial pose, optionally closing grippers.
+
+        Args:
+            side: Which arm(s) to home.
+            close_gripper: If True, set gripper to 1.0 (fully closed).
+        """
         home = np.zeros(7, dtype=np.float32)
+        if close_gripper:
+            home[6] = 1.0  # gripper normalized: 1.0 = fully closed
         if side == "both":
             action = {"left": home.copy(), "right": home.copy()}
         else:
