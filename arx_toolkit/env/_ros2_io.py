@@ -119,7 +119,7 @@ class RobotIO(Node):
             self.sync = ApproximateTimeSynchronizer(subs, queue_size=5, slop=0.02)
             self.sync.registerCallback(self._on_images)
             self.get_logger().info(
-                "Camera topics: %s", [s.topic for s in subs]
+                f"Camera topics: {[s.topic for s in subs]}"
             )
         else:
             self.get_logger().warn("No camera subscriptions configured.")
