@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>ARX VR Teleop</title>
+    <meta name="description" content="ARX LIFT2 VR Teleoperation">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+    <script src="vr_app.js" defer></script>
+    <script src="interface.js" defer></script>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <!-- Desktop Interface -->
+    <div class="desktop-interface" id="desktopInterface">
+      <div class="desktop-header">
+        <div class="desktop-title">ARX VR Teleop</div>
+        <div class="desktop-subtitle">Quest 3 VR dual-arm teleoperation for ARX LIFT2</div>
+
+        <div class="status-section">
+          <h2>Status</h2>
+          <div class="status-grid">
+            <div class="status-item">
+              <div class="status-indicator" id="vrStatus"></div>
+              <span>VR Connected</span>
+            </div>
+            <div class="status-item">
+              <div class="status-indicator" id="leftGripStatus"></div>
+              <span>Left Grip</span>
+            </div>
+            <div class="status-item">
+              <div class="status-indicator" id="rightGripStatus"></div>
+              <span>Right Grip</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- VR Instructions -->
+        <div class="vr-instructions-section">
+          <h2>Instructions</h2>
+          <div class="instructions-text">
+            <div class="instruction-item">
+              <strong>Setup:</strong> Open
+              <span id="vrServerUrl" style="font-family:monospace; background:rgba(255,255,255,0.2); padding:2px 6px; border-radius:4px;">https://loading...</span>
+              in Quest 3 browser, then tap <em>"Start Controller Tracking"</em>.
+            </div>
+            <div class="instruction-item">
+              <strong>Grip Button (side):</strong> Hold to activate arm control. The robot arm tracks your hand movement as a delta from the grip-press position.
+            </div>
+            <div class="instruction-item">
+              <strong>Trigger Button (index finger):</strong> Press to open gripper; release to close.
+            </div>
+            <div class="instruction-item">
+              <strong>Wrist Rotation:</strong> Roll and pitch of the controller map to the robot wrist.
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VR-only content -->
+    <div class="vr-content" id="vrContent">
+      <div class="vr-title">ARX VR Teleop</div>
+    </div>
+
+    <!-- A-Frame VR Scene -->
+    <a-scene vr-mode-ui="enabled: true;">
+      <!-- Passthrough setup -->
+      <a-entity webxr-passthrough="referenceSpaceType: local-floor"></a-entity>
+
+      <!-- Headset tracking -->
+      <a-entity id="headset" camera>
+        <a-text id="headsetInfo" value="Headset: ..." position="0 0.2 -0.5" rotation="0 0 0" scale="0.05 0.05 0.05" color="yellow" align="center"></a-text>
+      </a-entity>
+
+      <!-- Controllers -->
+      <a-entity id="leftHand" oculus-touch-controls="hand: left">
+        <a-text id="leftHandInfo" value="Pos: ...\nRot: ..." position="0 0.04 -0.05" rotation="0 0 0" scale="0.05 0.05 0.05" color="white" align="center"></a-text>
+      </a-entity>
+      <a-entity id="rightHand" oculus-touch-controls="hand: right">
+        <a-text id="rightHandInfo" value="Pos: ...\nRot: ..." position="0 0.04 -0.05" rotation="0 0 0" scale="0.05 0.05 0.05" color="white" align="center"></a-text>
+      </a-entity>
+    </a-scene>
+
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        const el = document.getElementById('vrServerUrl');
+        if (el) el.textContent = window.location.origin + '/';
+      });
+    </script>
+  </body>
+</html>

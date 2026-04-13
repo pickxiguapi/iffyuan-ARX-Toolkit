@@ -1,0 +1,175 @@
+/* ARX VR Teleop — Styles */
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  color: #e0e0e0;
+  overflow-x: auto;
+  min-width: 320px;
+}
+
+/* Desktop-only interface */
+.desktop-interface {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100vh;
+  z-index: 10000;
+  background: rgba(26, 26, 46, 0.97);
+  backdrop-filter: blur(10px);
+  padding: 30px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.desktop-header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.desktop-title {
+  font-size: 28px;
+  font-weight: bold;
+  color: #e94560;
+  margin-bottom: 8px;
+}
+
+.desktop-subtitle {
+  font-size: 14px;
+  color: #8899a6;
+  margin-bottom: 24px;
+}
+
+/* Status section */
+.status-section {
+  background: linear-gradient(135deg, #0f3460 0%, #533483 100%);
+  color: white;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  margin: 16px 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.status-section h2 {
+  color: white;
+  margin: 0 0 12px 0;
+  font-size: 1.1rem;
+}
+
+.status-grid {
+  display: flex;
+  gap: 2rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.status-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 14px;
+}
+
+.status-indicator {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background-color: #e94560;
+  transition: background-color 0.3s ease;
+  box-shadow: 0 0 8px rgba(233, 69, 96, 0.4);
+}
+
+.status-indicator.connected {
+  background-color: #0cce6b;
+  box-shadow: 0 0 8px rgba(12, 206, 107, 0.5);
+}
+
+/* VR Instructions */
+.vr-instructions-section {
+  background: linear-gradient(135deg, #0f3460 0%, #533483 100%);
+  color: white;
+  padding: 20px;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  margin: 16px 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.vr-instructions-section h2 {
+  color: white;
+  margin: 0 0 12px 0;
+  font-size: 1.1rem;
+}
+
+.instructions-text {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.instruction-item {
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.instruction-item strong {
+  color: #e94560;
+}
+
+/* VR-only content */
+.vr-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  z-index: 9999;
+  background: rgba(26, 26, 46, 0.95);
+  padding: 40px;
+  border-radius: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+}
+
+.vr-title {
+  font-size: 28px;
+  font-weight: bold;
+  color: #e94560;
+}
+
+/* A-Frame scene */
+a-scene {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .desktop-interface {
+    padding: 15px;
+  }
+  .status-grid {
+    gap: 1rem;
+  }
+}
+
+@media (display-mode: standalone) {
+  .desktop-interface {
+    display: none;
+  }
+}
