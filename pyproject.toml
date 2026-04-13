@@ -11,7 +11,7 @@ dependencies = [
     "numpy<2",
     "opencv-python",
     "pyyaml",
-    "zarr",
+    "zarr>=2.18,<3",
     "numcodecs",
 ]
 
