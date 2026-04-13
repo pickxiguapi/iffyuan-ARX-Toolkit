@@ -122,9 +122,9 @@ lock = threading.Lock()
 
 # 控制参数
 STEP_PRESETS = {
-    1: {"pos": 0.0016, "rot": 0.002, "base": 0.32, "lift": 0.8},   # 精细
-    2: {"pos": 0.002,  "rot": 0.003, "base": 0.40, "lift": 1.2},   # 中等
-    3: {"pos": 0.008,  "rot": 0.010, "base": 1.20, "lift": 3.2},   # 粗调
+    1: {"pos": 0.0004, "rot": 0.002, "base": 0.32, "lift": 0.2},   # 精细
+    2: {"pos": 0.0005, "rot": 0.003, "base": 0.40, "lift": 0.3},   # 中等
+    3: {"pos": 0.002,  "rot": 0.010, "base": 1.20, "lift": 0.8},   # 粗调
 }
 current_step_level = 1  # 默认精细档，避免急停
 active_side = "left"  # 当前控制的臂
@@ -594,9 +594,9 @@ const REPEAT_KEYS = new Set('qweasdikjluo'.split('').concat(
   ['arrowup','arrowdown','arrowleft','arrowright',',','.','=','-']
 ));
 const STEP_INFO = {
-  1: {pos:'1.6mm', rot:'0.11°'},
-  2: {pos:'2.0mm', rot:'0.17°'},
-  3: {pos:'8.0mm', rot:'0.57°'},
+  1: {pos:'0.4mm', rot:'0.11°'},
+  2: {pos:'0.5mm', rot:'0.17°'},
+  3: {pos:'2.0mm', rot:'0.57°'},
 };
 
 const BASE_KEYS = new Set(['arrowup','arrowdown','arrowleft','arrowright',',','.']);
