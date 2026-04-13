@@ -160,7 +160,7 @@ class RobotIO(Node):
         if not rclpy.ok():
             return False
         if pub.get_subscription_count() == 0:
-            self.get_logger().warn("%s no subscribers", side)
+            self.get_logger().warn(f"{side} no subscribers")
             return False
         pub.publish(cmd)
         return True
@@ -227,7 +227,7 @@ class RobotIO(Node):
                 img = cv2.resize(img, target_size)
             return img
         except Exception as e:
-            self.get_logger().warn("decode %s failed: %s", key, e)
+            self.get_logger().warn(f"decode {key} failed: {e}")
             return None
 
     @staticmethod
@@ -260,7 +260,7 @@ class RobotIO(Node):
                             [cv2.IMWRITE_PNG_COMPRESSION, 0],
                         )
             except Exception as e:
-                self.get_logger().warn("save %s failed: %s", key, e)
+                self.get_logger().warn(f"save {key} failed: {e}")
             finally:
                 self.save_queue.task_done()
         self._release_video_writers()
