@@ -1,0 +1,13 @@
+**build/
+**devel/
+**.catkin_workspace
+**install
+**log
+**.DS_Store
+.vscode/**
+**/.vscode/**
+**/.git/**"
+**/.DS_Store
+**/__pycache__
+**Test*/
+""
