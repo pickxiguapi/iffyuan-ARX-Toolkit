@@ -418,11 +418,6 @@ def convert(
         image_writer_threads=4,
     )
 
-    # --- 检测 add_frame 是否需要 task 作为独立参数 ---
-    import inspect
-    _af_sig = inspect.signature(dataset.add_frame)
-    _task_as_arg = "task" in _af_sig.parameters  # True → add_frame(frame, task=...)
-
     # --- 预读辅助函数 ---
     def _read_and_concat(keys: list[str], start: int, end: int) -> np.ndarray:
         """批量读取 keys 并按列拼接，返回 (L, D) float32."""
@@ -461,11 +456,7 @@ def convert(
                 img = Image.fromarray(cam_batches[cam][i].transpose(1, 2, 0))
                 frame[f"observation.images.{cam}"] = img
 
-            if _task_as_arg:
-                dataset.add_frame(frame, task=task_name)
-            else:
-                frame["task"] = task_name
-                dataset.add_frame(frame)
+            dataset.add_frame(frame, task=task_name)
 
         dataset.save_episode()
 
