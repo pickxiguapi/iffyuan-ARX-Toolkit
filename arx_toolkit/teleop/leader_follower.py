@@ -240,28 +240,28 @@ class LeaderFollowerTeleop:
     # ------------------------------------------------------------------
 
     def _wait_for_ros2_ready(self, timeout: float = 10.0) -> None:
-        """Block until arm observations are available (ROS2 graph ready).
+        """Block until arm command publishers have ≥1 subscriber.
 
         On first launch, ROS2 publishers/subscribers need time to discover
-        each other.  Without this wait, ``set_mode(3)`` silently fails
-        because there are no subscribers yet.
+        each other (DDS discovery).  Without this wait, ``set_mode(3)``
+        silently fails because the arm driver hasn't subscribed yet.
         """
-        logger.info("Waiting for ROS2 arm status …")
+        logger.info("Waiting for ROS2 subscribers on arm_cmd topics …")
+        node = self.env.node
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout:
-            try:
-                obs = self.env.get_observation(
-                    include_camera=False, include_base=False,
+            left_subs = node.cmd_pub_l.get_subscription_count()
+            right_subs = node.cmd_pub_r.get_subscription_count()
+            if left_subs >= 1 and right_subs >= 1:
+                logger.info(
+                    "ROS2 ready — subscribers: left=%d, right=%d (%.1fs)",
+                    left_subs, right_subs, time.monotonic() - t0,
                 )
-                if obs.get(f"{self.leader_side}_joint_pos") is not None:
-                    logger.info("ROS2 ready (%.1fs).", time.monotonic() - t0)
-                    return
-            except RuntimeError:
-                pass  # "Empty observation" — not ready yet
+                return
             time.sleep(0.2)
         logger.warning(
-            "Timed out waiting for ROS2 arm status after %.0fs. "
-            "Proceeding anyway — set_mode may fail.", timeout,
+            "Timed out waiting for arm_cmd subscribers after %.0fs. "
+            "set_mode may fail.", timeout,
         )
 
     # ------------------------------------------------------------------
