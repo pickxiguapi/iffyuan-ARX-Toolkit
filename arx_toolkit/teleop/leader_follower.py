@@ -159,10 +159,13 @@ class LeaderFollowerTeleop:
             logger.warning("Already running — call stop() first.")
             return
 
+        # Wait for ROS2 communication to be ready (arm status arriving)
+        self._wait_for_ros2_ready()
+
         # Put leader into gravity-compensation mode (mode=3)
         logger.info("Setting %s arm to gravity mode …", self.leader_side)
         self.env.set_mode(3, side=self.leader_side)
-        time.sleep(0.3)  # brief settle
+        time.sleep(0.5)  # settle after mode switch
 
         # Seed the filter with the current follower position
         obs = self.env.get_observation(include_camera=False, include_base=False)
@@ -231,6 +234,35 @@ class LeaderFollowerTeleop:
             pass
         finally:
             self.stop()
+
+    # ------------------------------------------------------------------
+    # ROS2 readiness check
+    # ------------------------------------------------------------------
+
+    def _wait_for_ros2_ready(self, timeout: float = 10.0) -> None:
+        """Block until arm observations are available (ROS2 graph ready).
+
+        On first launch, ROS2 publishers/subscribers need time to discover
+        each other.  Without this wait, ``set_mode(3)`` silently fails
+        because there are no subscribers yet.
+        """
+        logger.info("Waiting for ROS2 arm status …")
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            try:
+                obs = self.env.get_observation(
+                    include_camera=False, include_base=False,
+                )
+                if obs.get(f"{self.leader_side}_joint_pos") is not None:
+                    logger.info("ROS2 ready (%.1fs).", time.monotonic() - t0)
+                    return
+            except RuntimeError:
+                pass  # "Empty observation" — not ready yet
+            time.sleep(0.2)
+        logger.warning(
+            "Timed out waiting for ROS2 arm status after %.0fs. "
+            "Proceeding anyway — set_mode may fail.", timeout,
+        )
 
     # ------------------------------------------------------------------
     # Control loop (runs in background thread)
