@@ -13,7 +13,7 @@ Architecture::
     VRTeleop (this module)
         +-- HTTPS server (serves web-ui static files, required by WebXR)
         +-- WebSocket server (receives controller data)
-        +-- Control loop (20 Hz): hand state -> delta_eef -> env.step
+        +-- Control loop (50 Hz): hand state -> delta_eef -> EMA smooth -> env.step
 
 Control mapping (delta_eef):
     - Grip pressed: record origin position/quaternion
@@ -24,7 +24,7 @@ Control mapping (delta_eef):
     - Trigger <= 0.5: gripper closed (0.0 target)
     - X button (left controller): speed up
     - Y button (left controller): speed down
-    - 3 speed levels: [0.5, 0.75, 1.0]
+    - 5 speed levels: [0.2, 0.4, 0.6, 0.8, 1.0]
 
 Usage::
 
@@ -67,6 +67,10 @@ logger = get_logger("arx_toolkit.teleop.vr")
 # ---------------------------------------------------------------------------
 
 SPEED_SCALES = [0.2, 0.4, 0.6, 0.8, 1.0]
+
+# Smoothing defaults
+DEFAULT_EMA_ALPHA = 0.3     # lower = smoother but more latent (range 0~1)
+DEFAULT_DEADZONE = 0.003    # meters — ignore hand jitter below this threshold
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +283,12 @@ class VRTeleop:
         robot_z = +vr_y (raise hand → +Z).
     rot_scale : float
         Multiplier applied to wrist rotation deltas (degrees -> radians).
+    ema_alpha : float
+        Exponential moving average smoothing factor (0~1).
+        Lower = smoother but more lag.  Default 0.3.
+    deadzone : float
+        Position deadzone in meters.  Deltas with norm below this are
+        zeroed out to suppress hand jitter.  Default 0.003 (3 mm).
     swap_buttons : bool
         If True, swap trigger/grip roles: trigger=arm activate, grip=gripper.
         Default False: grip=arm activate, trigger=gripper.
@@ -292,11 +302,13 @@ class VRTeleop:
         https_port: int = 8443,
         ws_port: int = 8442,
         host: str = "0.0.0.0",
-        control_rate: float = 20.0,
+        control_rate: float = 50.0,
         vr_to_robot_scale: float = 1.0,
         axis_mapping: Tuple[int, int, int] = (2, 0, 1),
         axis_sign: Tuple[float, float, float] = (-1.0, 1.0, 1.0),
         rot_scale: float = 1.0,
+        ema_alpha: float = DEFAULT_EMA_ALPHA,
+        deadzone: float = DEFAULT_DEADZONE,
         swap_buttons: bool = False,
         certfile: Optional[str] = None,
         keyfile: Optional[str] = None,
@@ -310,6 +322,8 @@ class VRTeleop:
         self.axis_mapping = axis_mapping
         self.axis_sign = np.array(axis_sign, dtype=np.float64)
         self.rot_scale = rot_scale
+        self.ema_alpha = ema_alpha
+        self.deadzone = deadzone
         self.swap_buttons = swap_buttons
 
         # SSL
@@ -328,6 +342,10 @@ class VRTeleop:
         # Track first-time arm activation for terminal hints
         self._left_activated_once: bool = False
         self._right_activated_once: bool = False
+
+        # EMA smoothed action per hand (7D: xyz + rpy + gripper)
+        self._ema_left: Optional[np.ndarray] = None
+        self._ema_right: Optional[np.ndarray] = None
 
         # Servers
         self._httpd: Optional[http.server.HTTPServer] = None
@@ -395,6 +413,7 @@ class VRTeleop:
             f"  Axis  : mapping={self.axis_mapping}, sign={tuple(self.axis_sign)}\n"
             f"  Buttons: {btn_mode}\n"
             f"  Speed : {SPEED_SCALES[self._speed_level]} (level {self._speed_level+1}/5)\n"
+            f"  Smooth: EMA alpha={self.ema_alpha}, deadzone={self.deadzone*1000:.1f}mm\n"
             f"\n  Open the HTTPS URL on Quest 3 browser.\n"
             f"  X = speed up, Y = speed down.\n"
             f"  Ctrl+C to quit.\n"
@@ -568,10 +587,14 @@ class VRTeleop:
             await self.stop()
 
     def _tick(self) -> None:
-        """One control cycle: read VR states → build action → env.step."""
+        """One control cycle: read VR states → build action → EMA smooth → env.step."""
         with self._lock:
-            left_action = self._compute_arm_action(self._left)
-            right_action = self._compute_arm_action(self._right)
+            left_raw = self._compute_arm_action(self._left)
+            right_raw = self._compute_arm_action(self._right)
+
+        # EMA smoothing
+        left_action = self._apply_ema(left_raw, "left")
+        right_action = self._apply_ema(right_raw, "right")
 
         action = {
             "left": left_action,
@@ -586,6 +609,38 @@ class VRTeleop:
                 self.env.step(action)
             except Exception as e:
                 logger.error("env.step error: %s", e)
+
+    def _apply_ema(
+        self, raw: Optional[np.ndarray], hand: str
+    ) -> Optional[np.ndarray]:
+        """Apply exponential moving average smoothing to a 7D action.
+
+        When the hand is released (raw=None), reset the EMA state so the
+        next activation starts fresh.
+        """
+        if raw is None:
+            # Reset EMA state on release
+            if hand == "left":
+                self._ema_left = None
+            else:
+                self._ema_right = None
+            return None
+
+        prev = self._ema_left if hand == "left" else self._ema_right
+        alpha = self.ema_alpha
+
+        if prev is None:
+            smoothed = raw.copy()
+        else:
+            smoothed = alpha * raw + (1.0 - alpha) * prev
+
+        # Store
+        if hand == "left":
+            self._ema_left = smoothed
+        else:
+            self._ema_right = smoothed
+
+        return smoothed
 
     def _compute_arm_action(self, state: _ControllerState) -> Optional[np.ndarray]:
         """Convert a single controller state to a 7D delta_eef action.
@@ -613,6 +668,10 @@ class VRTeleop:
             vr_i = self.axis_mapping[robot_i]
             delta_xyz[robot_i] = raw_delta[vr_i] * self.axis_sign[robot_i]
         delta_xyz *= self.vr_to_robot_scale * speed_scale
+
+        # Deadzone — suppress hand jitter
+        if np.linalg.norm(delta_xyz) < self.deadzone:
+            delta_xyz[:] = 0.0
 
         # --- Rotation delta ---
         droll = 0.0

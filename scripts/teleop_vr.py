@@ -31,8 +31,8 @@ def main():
         help="Bind address. Default: 0.0.0.0",
     )
     parser.add_argument(
-        "--rate", type=float, default=20.0,
-        help="Control loop frequency in Hz. Default: 20",
+        "--rate", type=float, default=50.0,
+        help="Control loop frequency in Hz. Default: 50",
     )
     parser.add_argument(
         "--scale", type=float, default=1.0,
@@ -41,6 +41,14 @@ def main():
     parser.add_argument(
         "--rot-scale", type=float, default=1.0,
         help="Rotation delta scale factor. Default: 1.0",
+    )
+    parser.add_argument(
+        "--ema-alpha", type=float, default=0.3,
+        help="EMA smoothing factor (0~1). Lower = smoother. Default: 0.3",
+    )
+    parser.add_argument(
+        "--deadzone", type=float, default=0.003,
+        help="Position deadzone in meters. Default: 0.003 (3mm)",
     )
     parser.add_argument(
         "--swap-buttons", action="store_true",
@@ -71,6 +79,8 @@ def main():
         control_rate=args.rate,
         vr_to_robot_scale=args.scale,
         rot_scale=args.rot_scale,
+        ema_alpha=args.ema_alpha,
+        deadzone=args.deadzone,
         swap_buttons=args.swap_buttons,
         certfile=args.certfile,
         keyfile=args.keyfile,
