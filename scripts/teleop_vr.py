@@ -5,7 +5,7 @@ Usage (on machine B with hardware):
     python scripts/teleop_vr.py
     python scripts/teleop_vr.py --scale 0.5 --rate 30
     python scripts/teleop_vr.py --swap-buttons
-    python scripts/teleop_vr.py --https-port 9443 --ws-port 9442
+    python scripts/teleop_vr.py --lock-rotation
 """
 
 import argparse
@@ -43,14 +43,6 @@ def main():
         help="Rotation delta scale factor. Default: 1.0",
     )
     parser.add_argument(
-        "--ema-alpha", type=float, default=0.3,
-        help="EMA smoothing factor (0~1). Lower = smoother. Default: 0.3",
-    )
-    parser.add_argument(
-        "--deadzone", type=float, default=0.003,
-        help="Position deadzone in meters. Default: 0.003 (3mm)",
-    )
-    parser.add_argument(
         "--swap-buttons", action="store_true",
         help="Swap trigger/grip roles: trigger=arm activate, grip=gripper.",
     )
@@ -83,8 +75,6 @@ def main():
         control_rate=args.rate,
         vr_to_robot_scale=args.scale,
         rot_scale=args.rot_scale,
-        ema_alpha=args.ema_alpha,
-        deadzone=args.deadzone,
         swap_buttons=args.swap_buttons,
         lock_rotation=args.lock_rotation,
         certfile=args.certfile,

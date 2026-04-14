@@ -13,15 +13,15 @@ Architecture::
     VRTeleop (this module)
         +-- HTTPS server (serves web-ui static files, required by WebXR)
         +-- WebSocket server (receives controller data)
-        +-- Control loop (50 Hz): hand state -> delta_eef -> EMA smooth -> env.step
+        +-- Control loop (50 Hz): hand state -> delta_eef -> env.step
 
 Control mapping (delta_eef):
     - Grip pressed: record origin position/quaternion
     - Grip held:    delta_xyz = (current - origin) * scale
                     delta_roll/pitch from relative quaternion
-    - Grip released: arm action = None (hold position)
-    - Trigger > 0.5: gripper open (1.0 target)
-    - Trigger <= 0.5: gripper closed (0.0 target)
+    - Grip released: zero delta (hold position)
+    - Trigger > 0.5: gripper open
+    - Trigger <= 0.5: gripper hold
     - X button (left controller): speed up
     - Y button (left controller): speed down
     - 5 speed levels: [0.2, 0.4, 0.6, 0.8, 1.0]
@@ -68,9 +68,8 @@ logger = get_logger("arx_toolkit.teleop.vr")
 
 SPEED_SCALES = [0.2, 0.4, 0.6, 0.8, 1.0]
 
-# Smoothing defaults
-DEFAULT_EMA_ALPHA = 0.6     # lower = smoother but more latent (range 0~1)
-DEFAULT_DEADZONE = 0.002    # meters — ignore hand jitter below this threshold
+# Grip debounce: ignore release within this many seconds of activation
+GRIP_DEBOUNCE_SEC = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +133,7 @@ class _ControllerState:
 
     # Grip activation
     grip_active: bool = False
+    grip_activate_time: float = 0.0  # monotonic time of last activation
 
     # Origin recorded when grip is first pressed
     origin_position: Optional[np.ndarray] = None
@@ -148,6 +148,7 @@ class _ControllerState:
 
     def reset(self) -> None:
         self.grip_active = False
+        self.grip_activate_time = 0.0
         self.origin_position = None
         self.origin_quaternion = None
         self.current_position = None
@@ -283,12 +284,6 @@ class VRTeleop:
         robot_z = +vr_y (raise hand → +Z).
     rot_scale : float
         Multiplier applied to wrist rotation deltas (degrees -> radians).
-    ema_alpha : float
-        Exponential moving average smoothing factor (0~1).
-        Lower = smoother but more lag.  Default 0.3.
-    deadzone : float
-        Position deadzone in meters.  Deltas with norm below this are
-        zeroed out to suppress hand jitter.  Default 0.003 (3 mm).
     swap_buttons : bool
         If True, swap trigger/grip roles: trigger=arm activate, grip=gripper.
         Default False: grip=arm activate, trigger=gripper.
@@ -310,8 +305,6 @@ class VRTeleop:
         axis_mapping: Tuple[int, int, int] = (2, 0, 1),
         axis_sign: Tuple[float, float, float] = (-1.0, -1.0, 1.0),
         rot_scale: float = 1.0,
-        ema_alpha: float = DEFAULT_EMA_ALPHA,
-        deadzone: float = DEFAULT_DEADZONE,
         swap_buttons: bool = False,
         lock_rotation: bool = False,
         certfile: Optional[str] = None,
@@ -326,8 +319,6 @@ class VRTeleop:
         self.axis_mapping = axis_mapping
         self.axis_sign = np.array(axis_sign, dtype=np.float64)
         self.rot_scale = rot_scale
-        self.ema_alpha = ema_alpha
-        self.deadzone = deadzone
         self.swap_buttons = swap_buttons
         self.lock_rotation = lock_rotation
 
@@ -342,15 +333,10 @@ class VRTeleop:
 
         # Speed level (index into SPEED_SCALES)
         self._speed_level: int = 0  # default: slowest (0.2x)
-        self._prev_speed_level: int = 0
 
         # Track first-time arm activation for terminal hints
         self._left_activated_once: bool = False
         self._right_activated_once: bool = False
-
-        # EMA smoothed action per hand (7D: xyz + rpy + gripper)
-        self._ema_left: Optional[np.ndarray] = None
-        self._ema_right: Optional[np.ndarray] = None
 
         # Servers
         self._httpd: Optional[http.server.HTTPServer] = None
@@ -419,7 +405,6 @@ class VRTeleop:
             f"  Buttons: {btn_mode}\n"
             f"  Rotation: {'LOCKED 🔒' if self.lock_rotation else 'enabled'}\n"
             f"  Speed : {SPEED_SCALES[self._speed_level]} (level {self._speed_level+1}/5)\n"
-            f"  Smooth: EMA alpha={self.ema_alpha}, deadzone={self.deadzone*1000:.1f}mm\n"
             f"\n  Open the HTTPS URL on Quest 3 browser.\n"
             f"  X = speed up, Y = speed down.\n"
             f"  Ctrl+C to quit.\n"
@@ -493,18 +478,7 @@ class VRTeleop:
             )
 
     def _process_vr_data(self, data: Dict) -> None:
-        """Parse incoming VR JSON and update controller states.
-
-        Expected format (sent every frame by vr_app.js)::
-
-            {
-              "timestamp": ...,
-              "leftController":  { position, quaternion, gripActive, trigger, ... },
-              "rightController": { position, quaternion, gripActive, trigger, ... },
-              "headset": { ... },
-              "speedLevel": 0|1|2
-            }
-        """
+        """Parse incoming VR JSON and update controller states."""
         with self._lock:
             if "leftController" in data:
                 self._update_hand(self._left, data["leftController"])
@@ -543,10 +517,12 @@ class VRTeleop:
                 [quat["x"], quat["y"], quat["z"], quat["w"]], dtype=np.float64
             )
 
-        # Grip state machine
+        # Grip state machine with debounce
+        now = time.monotonic()
         if grip and not state.grip_active:
             # Grip just pressed — record origin
             state.grip_active = True
+            state.grip_activate_time = now
             state.origin_position = (
                 state.current_position.copy() if state.current_position is not None else None
             )
@@ -564,11 +540,12 @@ class VRTeleop:
                 self._right_activated_once = True
                 print(f"\033[1m\033[92m[RIGHT] 臂激活 ✓\033[0m")
         elif not grip and state.grip_active:
-            # Grip released
-            state.grip_active = False
-            state.origin_position = None
-            state.origin_quaternion = None
-            logger.info("%s grip RELEASED", state.hand.upper())
+            # Debounce: ignore release if too soon after activation
+            if (now - state.grip_activate_time) >= GRIP_DEBOUNCE_SEC:
+                state.grip_active = False
+                state.origin_position = None
+                state.origin_quaternion = None
+                logger.info("%s grip RELEASED", state.hand.upper())
 
     # ------------------------------------------------------------------
     # Control loop
@@ -593,11 +570,11 @@ class VRTeleop:
             await self.stop()
 
     def _tick(self) -> None:
-        """One control cycle: read VR states → build action → EMA smooth → env.step."""
+        """One control cycle: read VR states → build action → env.step."""
         with self._lock:
-            left_raw = self._compute_arm_action(self._left)
-            right_raw = self._compute_arm_action(self._right)
-            # Capture raw VR data for debug
+            left_action = self._compute_arm_action(self._left)
+            right_action = self._compute_arm_action(self._right)
+            # Debug info
             left_grip = self._left.grip_active
             right_grip = self._right.grip_active
             left_pos = self._left.current_position.copy() if self._left.current_position is not None else None
@@ -605,16 +582,12 @@ class VRTeleop:
             left_origin = self._left.origin_position.copy() if self._left.origin_position is not None else None
             right_origin = self._right.origin_position.copy() if self._right.origin_position is not None else None
 
-        # EMA smoothing
-        left_action = self._apply_ema(left_raw, "left")
-        right_action = self._apply_ema(right_raw, "right")
-
         # Debug print every ~1s (every 50 ticks at 50Hz)
         self._debug_counter = getattr(self, '_debug_counter', 0) + 1
         if self._debug_counter % 50 == 0:
-            for side, grip, pos, origin, raw, act in [
-                ("L", left_grip, left_pos, left_origin, left_raw, left_action),
-                ("R", right_grip, right_pos, right_origin, right_raw, right_action),
+            for side, grip, pos, origin, act in [
+                ("L", left_grip, left_pos, left_origin, left_action),
+                ("R", right_grip, right_pos, right_origin, right_action),
             ]:
                 if grip and pos is not None and origin is not None:
                     vr_delta = pos - origin
@@ -628,8 +601,8 @@ class VRTeleop:
         action = {
             "left": left_action,
             "right": right_action,
-            "base": None,   # VR does not control base
-            "lift": None,   # VR does not control lift
+            "base": None,
+            "lift": None,
         }
 
         # Step if VR is connected (has position data)
@@ -641,38 +614,6 @@ class VRTeleop:
             except Exception as e:
                 logger.error("env.step error: %s", e)
 
-    def _apply_ema(
-        self, raw: Optional[np.ndarray], hand: str
-    ) -> Optional[np.ndarray]:
-        """Apply exponential moving average smoothing to a 7D action.
-
-        When the hand is released (raw=None), reset the EMA state so the
-        next activation starts fresh.
-        """
-        if raw is None:
-            # Reset EMA state on release
-            if hand == "left":
-                self._ema_left = None
-            else:
-                self._ema_right = None
-            return None
-
-        prev = self._ema_left if hand == "left" else self._ema_right
-        alpha = self.ema_alpha
-
-        if prev is None:
-            smoothed = raw.copy()
-        else:
-            smoothed = alpha * raw + (1.0 - alpha) * prev
-
-        # Store
-        if hand == "left":
-            self._ema_left = smoothed
-        else:
-            self._ema_right = smoothed
-
-        return smoothed
-
     def _compute_arm_action(self, state: _ControllerState) -> Optional[np.ndarray]:
         """Convert a single controller state to a 7D delta_eef action.
 
@@ -681,9 +622,11 @@ class VRTeleop:
 
         Action layout: [dx, dy, dz, droll, dpitch, dyaw, gripper_delta]
         """
+        # Gripper: trigger pressed = open, released = hold
+        gripper_delta = -0.5 if state.trigger_value > 0.5 else 0.0
+
         if not state.grip_active:
             # Hold position: zero delta for pose, but still control gripper
-            gripper_delta = -0.5 if state.trigger_value > 0.5 else 0.0
             action = np.zeros(7, dtype=np.float64)
             action[6] = gripper_delta
             return action
@@ -705,10 +648,6 @@ class VRTeleop:
             delta_xyz[robot_i] = raw_delta[vr_i] * self.axis_sign[robot_i]
         delta_xyz *= self.vr_to_robot_scale * speed_scale
 
-        # Deadzone — suppress hand jitter
-        if np.linalg.norm(delta_xyz) < self.deadzone:
-            delta_xyz[:] = 0.0
-
         # --- Rotation delta ---
         droll = 0.0
         dpitch = 0.0
@@ -719,26 +658,14 @@ class VRTeleop:
             and state.current_quaternion is not None
             and state.origin_quaternion is not None
         ):
-            # Z-axis rotation -> wrist roll
             roll_deg = _extract_axis_rotation(
                 state.current_quaternion, state.origin_quaternion, 2
             )
-            # X-axis rotation -> wrist pitch
             pitch_deg = _extract_axis_rotation(
                 state.current_quaternion, state.origin_quaternion, 0
             )
-
-            # Convert degrees to radians, apply scale
             droll = math.radians(-roll_deg) * self.rot_scale
             dpitch = math.radians(-pitch_deg) * self.rot_scale
-
-        # --- Gripper ---
-        # trigger pressed => open (negative delta toward 0)
-        # trigger released => hold (no change)
-        if state.trigger_value > 0.5:
-            gripper_delta = -0.5
-        else:
-            gripper_delta = 0.0
 
         return np.array(
             [delta_xyz[0], delta_xyz[1], delta_xyz[2],
