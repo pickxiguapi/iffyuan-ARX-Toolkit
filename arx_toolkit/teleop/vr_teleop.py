@@ -66,7 +66,7 @@ logger = get_logger("arx_toolkit.teleop.vr")
 # Constants
 # ---------------------------------------------------------------------------
 
-SPEED_SCALES = [0.5, 0.75, 1.0]
+SPEED_SCALES = [0.2, 0.4, 0.6, 0.8, 1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -273,9 +273,9 @@ class VRTeleop:
         Default ``(2, 0, 1)`` maps VR→robot as:
         robot_x ← vr_z, robot_y ← vr_x, robot_z ← vr_y.
     axis_sign : tuple[float, float, float]
-        Sign flip per axis.  Default ``(-1.0, -1.0, 1.0)`` gives:
+        Sign flip per axis.  Default ``(-1.0, 1.0, 1.0)`` gives:
         robot_x = -vr_z (push forward → +X),
-        robot_y = -vr_x (move left → +Y),
+        robot_y = +vr_x (move left → +Y),
         robot_z = +vr_y (raise hand → +Z).
     rot_scale : float
         Multiplier applied to wrist rotation deltas (degrees -> radians).
@@ -295,7 +295,7 @@ class VRTeleop:
         control_rate: float = 20.0,
         vr_to_robot_scale: float = 1.0,
         axis_mapping: Tuple[int, int, int] = (2, 0, 1),
-        axis_sign: Tuple[float, float, float] = (-1.0, -1.0, 1.0),
+        axis_sign: Tuple[float, float, float] = (-1.0, 1.0, 1.0),
         rot_scale: float = 1.0,
         swap_buttons: bool = False,
         certfile: Optional[str] = None,
@@ -322,8 +322,8 @@ class VRTeleop:
         self._lock = threading.Lock()
 
         # Speed level (index into SPEED_SCALES)
-        self._speed_level: int = 2  # default: fastest
-        self._prev_speed_level: int = 2
+        self._speed_level: int = 0  # default: slowest (0.2x)
+        self._prev_speed_level: int = 0
 
         # Track first-time arm activation for terminal hints
         self._left_activated_once: bool = False
@@ -394,7 +394,7 @@ class VRTeleop:
             f"  Scale : {self.vr_to_robot_scale}\n"
             f"  Axis  : mapping={self.axis_mapping}, sign={tuple(self.axis_sign)}\n"
             f"  Buttons: {btn_mode}\n"
-            f"  Speed : {SPEED_SCALES[self._speed_level]} (level {self._speed_level+1}/3)\n"
+            f"  Speed : {SPEED_SCALES[self._speed_level]} (level {self._speed_level+1}/5)\n"
             f"\n  Open the HTTPS URL on Quest 3 browser.\n"
             f"  X = speed up, Y = speed down.\n"
             f"  Ctrl+C to quit.\n"
@@ -488,11 +488,11 @@ class VRTeleop:
 
             # Speed level
             new_speed = data.get("speedLevel", self._speed_level)
-            if isinstance(new_speed, int) and 0 <= new_speed <= 2:
+            if isinstance(new_speed, int) and 0 <= new_speed <= 4:
                 if new_speed != self._speed_level:
                     self._speed_level = new_speed
                     print(
-                        f"\033[1m\033[94m[SPEED] 档位: {self._speed_level+1}/3 "
+                        f"\033[1m\033[94m[SPEED] 档位: {self._speed_level+1}/5 "
                         f"(scale={SPEED_SCALES[self._speed_level]})\033[0m"
                     )
 

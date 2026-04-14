@@ -13,8 +13,8 @@
 const URL_PARAMS = new URLSearchParams(window.location.search);
 const SWAP_BUTTONS = URL_PARAMS.get('swap') === '1';
 
-// --- Speed levels ---
-const SPEED_LEVELS = [0.5, 0.75, 1.0];
+// --- Speed levels (5 levels) ---
+const SPEED_LEVELS = [0.2, 0.4, 0.6, 0.8, 1.0];
 
 AFRAME.registerComponent('controller-updater', {
   init: function () {
@@ -35,8 +35,8 @@ AFRAME.registerComponent('controller-updater', {
     this.leftTriggerDown = false;
     this.rightTriggerDown = false;
 
-    // --- Speed level (0=slow, 1=mid, 2=fast) ---
-    this.speedLevel = 2;  // default: fastest
+    // --- Speed level (0=slowest, 4=fastest) ---
+    this.speedLevel = 0;  // default: slowest (0.2x)
 
     // --- Quaternion tracking for display ---
     this.leftGripInitialQuaternion = null;
@@ -153,12 +153,12 @@ AFRAME.registerComponent('controller-updater', {
 
     // --- Speed control: X = speed up, Y = speed down (left controller) ---
     this.leftHand.addEventListener('xbuttondown', () => {
-      this.speedLevel = Math.min(this.speedLevel + 1, 2);
-      console.log(`Speed UP: level ${this.speedLevel + 1}/3 (scale=${SPEED_LEVELS[this.speedLevel]})`);
+      this.speedLevel = Math.min(this.speedLevel + 1, 4);
+      console.log(`Speed UP: level ${this.speedLevel + 1}/5 (scale=${SPEED_LEVELS[this.speedLevel]})`);
     });
     this.leftHand.addEventListener('ybuttondown', () => {
       this.speedLevel = Math.max(this.speedLevel - 1, 0);
-      console.log(`Speed DOWN: level ${this.speedLevel + 1}/3 (scale=${SPEED_LEVELS[this.speedLevel]})`);
+      console.log(`Speed DOWN: level ${this.speedLevel + 1}/5 (scale=${SPEED_LEVELS[this.speedLevel]})`);
     });
   },
 
