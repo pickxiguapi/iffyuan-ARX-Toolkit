@@ -11,7 +11,41 @@
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
-    <!-- A-Frame VR Scene — default VR button disabled, we use our own -->
+    <!-- Desktop status (visible on non-VR browsers) -->
+    <div id="desktopStatus" style="
+      position:fixed; top:0; left:0; width:100%; height:100vh;
+      z-index:10000; background:rgba(26,26,46,0.97);
+      display:flex; align-items:center; justify-content:center;
+      flex-direction:column; font-family:system-ui,sans-serif; color:#e0e0e0;
+    ">
+      <h1 style="color:#e94560; margin-bottom:12px;">ARX VR Teleop</h1>
+      <p style="font-size:18px; color:#8899a6; margin-bottom:24px;">
+        Quest 3 VR dual-arm teleoperation for ARX LIFT2
+      </p>
+      <div style="
+        background:linear-gradient(135deg,#0f3460,#533483);
+        padding:24px 36px; border-radius:12px; text-align:center;
+        box-shadow:0 8px 24px rgba(0,0,0,0.3); max-width:500px; width:90%;
+      ">
+        <p style="margin:0 0 12px; font-size:16px;">
+          <strong>Server URL:</strong>
+          <span id="vrServerUrl" style="
+            font-family:monospace; background:rgba(255,255,255,0.15);
+            padding:3px 8px; border-radius:4px;
+          ">loading...</span>
+        </p>
+        <p style="margin:0 0 8px; font-size:14px; color:#aaa;">
+          Open this URL in Quest 3 browser → tap the green button → start teleop
+        </p>
+        <div id="vrStatusDot" style="
+          display:inline-block; width:14px; height:14px; border-radius:50%;
+          background:#e94560; margin-right:8px; vertical-align:middle;
+        "></div>
+        <span id="vrStatusText" style="font-size:14px;">VR not connected</span>
+      </div>
+    </div>
+
+    <!-- A-Frame VR Scene -->
     <a-scene vr-mode-ui="enabled: true">
       <!-- Passthrough setup -->
       <a-entity webxr-passthrough="referenceSpaceType: local-floor"></a-entity>
@@ -29,5 +63,19 @@
         <a-text id="rightHandInfo" value="Pos: ...\nRot: ..." position="0 0.04 -0.05" rotation="0 0 0" scale="0.05 0.05 0.05" color="white" align="center"></a-text>
       </a-entity>
     </a-scene>
+
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        var el = document.getElementById('vrServerUrl');
+        if (el) el.textContent = window.location.origin + '/';
+
+        // On Quest (VR-capable), hide desktop status to show VR button
+        if (navigator.xr) {
+          navigator.xr.isSessionSupported('immersive-vr').then(function(ok) {
+            if (ok) document.getElementById('desktopStatus').style.display = 'none';
+          }).catch(function(){});
+        }
+      });
+    </script>
   </body>
 </html>
