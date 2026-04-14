@@ -69,8 +69,8 @@ logger = get_logger("arx_toolkit.teleop.vr")
 SPEED_SCALES = [0.2, 0.4, 0.6, 0.8, 1.0]
 
 # Smoothing defaults
-DEFAULT_EMA_ALPHA = 0.3     # lower = smoother but more latent (range 0~1)
-DEFAULT_DEADZONE = 0.003    # meters — ignore hand jitter below this threshold
+DEFAULT_EMA_ALPHA = 0.6     # lower = smoother but more latent (range 0~1)
+DEFAULT_DEADZONE = 0.002    # meters — ignore hand jitter below this threshold
 
 
 # ---------------------------------------------------------------------------
@@ -597,10 +597,33 @@ class VRTeleop:
         with self._lock:
             left_raw = self._compute_arm_action(self._left)
             right_raw = self._compute_arm_action(self._right)
+            # Capture raw VR data for debug
+            left_grip = self._left.grip_active
+            right_grip = self._right.grip_active
+            left_pos = self._left.current_position.copy() if self._left.current_position is not None else None
+            right_pos = self._right.current_position.copy() if self._right.current_position is not None else None
+            left_origin = self._left.origin_position.copy() if self._left.origin_position is not None else None
+            right_origin = self._right.origin_position.copy() if self._right.origin_position is not None else None
 
         # EMA smoothing
         left_action = self._apply_ema(left_raw, "left")
         right_action = self._apply_ema(right_raw, "right")
+
+        # Debug print every ~1s (every 50 ticks at 50Hz)
+        self._debug_counter = getattr(self, '_debug_counter', 0) + 1
+        if self._debug_counter % 50 == 0:
+            for side, grip, pos, origin, raw, act in [
+                ("L", left_grip, left_pos, left_origin, left_raw, left_action),
+                ("R", right_grip, right_pos, right_origin, right_raw, right_action),
+            ]:
+                if grip and pos is not None and origin is not None:
+                    vr_delta = pos - origin
+                    act_str = f"[{act[0]:+.4f} {act[1]:+.4f} {act[2]:+.4f}]" if act is not None else "None"
+                    print(
+                        f"\033[90m[{side}] vr_delta=[{vr_delta[0]:+.4f} {vr_delta[1]:+.4f} {vr_delta[2]:+.4f}]"
+                        f" → robot_xyz={act_str}"
+                        f" speed={SPEED_SCALES[self._speed_level]}\033[0m"
+                    )
 
         action = {
             "left": left_action,
