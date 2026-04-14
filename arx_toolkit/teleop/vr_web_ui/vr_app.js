@@ -4,11 +4,22 @@
  * Adapted from XLeVR vr_app.js.
  * Captures Quest 3 controller position/quaternion/trigger/grip per frame
  * and sends JSON over WSS to the Python VRTeleop server.
+ *
+ * URL query params:
+ *   ?swap=1  — swap trigger/grip roles (trigger=arm, grip=gripper)
  */
+
+// --- Configuration from URL query params ---
+const URL_PARAMS = new URLSearchParams(window.location.search);
+const SWAP_BUTTONS = URL_PARAMS.get('swap') === '1';
+
+// --- Speed levels ---
+const SPEED_LEVELS = [0.5, 0.75, 1.0];
 
 AFRAME.registerComponent('controller-updater', {
   init: function () {
     console.log("ARX VR controller-updater initialized.");
+    console.log(`Button mode: ${SWAP_BUTTONS ? 'trigger=arm, grip=gripper' : 'grip=arm, trigger=gripper'}`);
 
     this.leftHand = document.querySelector('#leftHand');
     this.rightHand = document.querySelector('#rightHand');
@@ -23,6 +34,9 @@ AFRAME.registerComponent('controller-updater', {
     this.rightGripDown = false;
     this.leftTriggerDown = false;
     this.rightTriggerDown = false;
+
+    // --- Speed level (0=slow, 1=mid, 2=fast) ---
+    this.speedLevel = 2;  // default: fastest
 
     // --- Quaternion tracking for display ---
     this.leftGripInitialQuaternion = null;
@@ -96,33 +110,55 @@ AFRAME.registerComponent('controller-updater', {
       return degrees;
     };
 
-    // --- Event listeners ---
-    this.leftHand.addEventListener('triggerdown', () => { this.leftTriggerDown = true; });
-    this.leftHand.addEventListener('triggerup', () => { this.leftTriggerDown = false; });
-    this.leftHand.addEventListener('gripdown', () => {
+    // --- Helper: bind arm activation events ---
+    // In default mode: grip = arm activate, trigger = gripper
+    // In swap mode:    trigger = arm activate, grip = gripper
+    const armDownEvent = SWAP_BUTTONS ? 'triggerdown' : 'gripdown';
+    const armUpEvent   = SWAP_BUTTONS ? 'triggerup'   : 'gripup';
+
+    // Left hand — arm activation
+    this.leftHand.addEventListener(armDownEvent, () => {
       this.leftGripDown = true;
       if (this.leftHand.object3D.visible) {
         this.leftGripInitialQuaternion = this.leftHand.object3D.quaternion.clone();
       }
     });
-    this.leftHand.addEventListener('gripup', () => {
+    this.leftHand.addEventListener(armUpEvent, () => {
       this.leftGripDown = false;
       this.leftGripInitialQuaternion = null;
       this.leftZAxisRotation = 0;
     });
 
-    this.rightHand.addEventListener('triggerdown', () => { this.rightTriggerDown = true; });
-    this.rightHand.addEventListener('triggerup', () => { this.rightTriggerDown = false; });
-    this.rightHand.addEventListener('gripdown', () => {
+    // Right hand — arm activation
+    this.rightHand.addEventListener(armDownEvent, () => {
       this.rightGripDown = true;
       if (this.rightHand.object3D.visible) {
         this.rightGripInitialQuaternion = this.rightHand.object3D.quaternion.clone();
       }
     });
-    this.rightHand.addEventListener('gripup', () => {
+    this.rightHand.addEventListener(armUpEvent, () => {
       this.rightGripDown = false;
       this.rightGripInitialQuaternion = null;
       this.rightZAxisRotation = 0;
+    });
+
+    // Left/right hand — gripper (the OTHER button)
+    const gripperDownEvent = SWAP_BUTTONS ? 'gripdown' : 'triggerdown';
+    const gripperUpEvent   = SWAP_BUTTONS ? 'gripup'   : 'triggerup';
+
+    this.leftHand.addEventListener(gripperDownEvent, () => { this.leftTriggerDown = true; });
+    this.leftHand.addEventListener(gripperUpEvent,   () => { this.leftTriggerDown = false; });
+    this.rightHand.addEventListener(gripperDownEvent, () => { this.rightTriggerDown = true; });
+    this.rightHand.addEventListener(gripperUpEvent,   () => { this.rightTriggerDown = false; });
+
+    // --- Speed control: X = speed up, Y = speed down (left controller) ---
+    this.leftHand.addEventListener('xbuttondown', () => {
+      this.speedLevel = Math.min(this.speedLevel + 1, 2);
+      console.log(`Speed UP: level ${this.speedLevel + 1}/3 (scale=${SPEED_LEVELS[this.speedLevel]})`);
+    });
+    this.leftHand.addEventListener('ybuttondown', () => {
+      this.speedLevel = Math.max(this.speedLevel - 1, 0);
+      console.log(`Speed DOWN: level ${this.speedLevel + 1}/3 (scale=${SPEED_LEVELS[this.speedLevel]})`);
     });
   },
 
@@ -259,7 +295,8 @@ AFRAME.registerComponent('controller-updater', {
           timestamp: Date.now(),
           leftController: leftController,
           rightController: rightController,
-          headset: headset
+          headset: headset,
+          speedLevel: this.speedLevel
         }));
       }
     }
@@ -286,7 +323,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // "Start Controller Tracking" button for Quest 3
+  // "Enter VR" button — full-screen, unmissable
   addControllerTrackingButton();
 });
 
@@ -303,17 +340,44 @@ function addControllerTrackingButton() {
 
     const btn = document.createElement('button');
     btn.id = 'start-tracking-button';
-    btn.textContent = 'Start Controller Tracking';
+    btn.textContent = '进入 VR 控制';
     btn.style.cssText = `
-      position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
-      padding:20px 40px; font-size:20px; font-weight:bold;
-      background:#4CAF50; color:white; border:none; border-radius:8px;
-      cursor:pointer; z-index:9999; box-shadow:0 4px 8px rgba(0,0,0,0.3);
+      position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+      font-size: 48px; font-weight: bold;
+      background: #2ecc40; color: white; border: none;
+      cursor: pointer; z-index: 99999;
+      display: flex; align-items: center; justify-content: center;
+      letter-spacing: 4px;
+      animation: pulse 2s ease-in-out infinite;
     `;
+
+    // Add pulse animation
+    const style = document.createElement('style');
+    style.textContent = `
+      @keyframes pulse {
+        0%, 100% { background: #2ecc40; }
+        50%      { background: #27ae60; }
+      }
+    `;
+    document.head.appendChild(style);
+
     btn.onclick = () => {
       const sceneEl = document.querySelector('a-scene');
       if (sceneEl) {
-        sceneEl.enterVR(true).catch(err => {
+        sceneEl.enterVR(true).then(() => {
+          // Beep confirmation sound
+          try {
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.frequency.value = 880;
+            gain.gain.value = 0.3;
+            osc.start();
+            osc.stop(ctx.currentTime + 0.15);
+          } catch(e) { /* audio not critical */ }
+        }).catch(err => {
           console.error('Failed to enter VR:', err);
           alert('Failed to start AR session: ' + err.message);
         });
@@ -324,7 +388,7 @@ function addControllerTrackingButton() {
     const sceneEl = document.querySelector('a-scene');
     if (sceneEl) {
       sceneEl.addEventListener('enter-vr', () => { btn.style.display = 'none'; });
-      sceneEl.addEventListener('exit-vr', () => { btn.style.display = 'block'; });
+      sceneEl.addEventListener('exit-vr', () => { btn.style.display = 'flex'; });
     }
   }).catch(err => console.error('XR check error:', err));
 }

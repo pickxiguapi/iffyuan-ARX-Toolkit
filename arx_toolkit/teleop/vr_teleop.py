@@ -22,6 +22,9 @@ Control mapping (delta_eef):
     - Grip released: arm action = None (hold position)
     - Trigger > 0.5: gripper open (1.0 target)
     - Trigger <= 0.5: gripper closed (0.0 target)
+    - X button (left controller): speed up
+    - Y button (left controller): speed down
+    - 3 speed levels: [0.5, 0.75, 1.0]
 
 Usage::
 
@@ -57,6 +60,13 @@ from arx_toolkit.env.arx_env import ARXEnv
 from arx_toolkit.utils.logger import get_logger
 
 logger = get_logger("arx_toolkit.teleop.vr")
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+SPEED_SCALES = [0.5, 0.75, 1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +182,11 @@ def _extract_axis_rotation(
 # ---------------------------------------------------------------------------
 
 class _StaticHandler(http.server.BaseHTTPRequestHandler):
-    """Minimal HTTPS handler that serves the VR web-ui static files."""
+    """Minimal HTTPS handler that serves the VR web-ui static files.
+
+    When ``swap_buttons`` is set on the server, accessing ``/`` without
+    ``?swap=1`` will be redirected to ``/?swap=1``.
+    """
 
     def end_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -191,7 +205,19 @@ class _StaticHandler(http.server.BaseHTTPRequestHandler):
         pass  # suppress noisy HTTP logs
 
     def do_GET(self):
-        path = self.path.split("?")[0]  # strip query string
+        raw_path = self.path
+        path = raw_path.split("?")[0]  # strip query string
+        query = raw_path.split("?")[1] if "?" in raw_path else ""
+
+        # Redirect to /?swap=1 if swap_buttons is enabled and not already set
+        swap_buttons: bool = getattr(self.server, "swap_buttons", False)
+        if swap_buttons and path in ("/", "/index.html") and "swap=1" not in query:
+            location = "/?swap=1"
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.end_headers()
+            return
+
         # Route to files
         if path in ("/", "/index.html"):
             self._serve("index.html", "text/html")
@@ -244,11 +270,18 @@ class VRTeleop:
         Multiplier applied to VR position deltas before sending to robot.
     axis_mapping : tuple[int, int, int]
         Index mapping from VR (x, y, z) to robot (x, y, z).
-        Default ``(0, 1, 2)`` = identity.  Adjust after real-robot calibration.
+        Default ``(2, 0, 1)`` maps VR→robot as:
+        robot_x ← vr_z, robot_y ← vr_x, robot_z ← vr_y.
     axis_sign : tuple[float, float, float]
-        Sign flip per axis.  Default ``(1.0, 1.0, 1.0)`` = no flip.
+        Sign flip per axis.  Default ``(-1.0, -1.0, 1.0)`` gives:
+        robot_x = -vr_z (push forward → +X),
+        robot_y = -vr_x (move left → +Y),
+        robot_z = +vr_y (raise hand → +Z).
     rot_scale : float
         Multiplier applied to wrist rotation deltas (degrees -> radians).
+    swap_buttons : bool
+        If True, swap trigger/grip roles: trigger=arm activate, grip=gripper.
+        Default False: grip=arm activate, trigger=gripper.
     certfile, keyfile : str or None
         Paths to SSL cert/key.  ``None`` = auto-generate in cwd.
     """
@@ -261,9 +294,10 @@ class VRTeleop:
         host: str = "0.0.0.0",
         control_rate: float = 20.0,
         vr_to_robot_scale: float = 1.0,
-        axis_mapping: Tuple[int, int, int] = (0, 1, 2),
-        axis_sign: Tuple[float, float, float] = (1.0, 1.0, 1.0),
+        axis_mapping: Tuple[int, int, int] = (2, 0, 1),
+        axis_sign: Tuple[float, float, float] = (-1.0, -1.0, 1.0),
         rot_scale: float = 1.0,
+        swap_buttons: bool = False,
         certfile: Optional[str] = None,
         keyfile: Optional[str] = None,
     ):
@@ -276,6 +310,7 @@ class VRTeleop:
         self.axis_mapping = axis_mapping
         self.axis_sign = np.array(axis_sign, dtype=np.float64)
         self.rot_scale = rot_scale
+        self.swap_buttons = swap_buttons
 
         # SSL
         self.certfile = certfile or "cert.pem"
@@ -285,6 +320,14 @@ class VRTeleop:
         self._left = _ControllerState(hand="left")
         self._right = _ControllerState(hand="right")
         self._lock = threading.Lock()
+
+        # Speed level (index into SPEED_SCALES)
+        self._speed_level: int = 2  # default: fastest
+        self._prev_speed_level: int = 2
+
+        # Track first-time arm activation for terminal hints
+        self._left_activated_once: bool = False
+        self._right_activated_once: bool = False
 
         # Servers
         self._httpd: Optional[http.server.HTTPServer] = None
@@ -315,6 +358,7 @@ class VRTeleop:
             (self.host, self.https_port), _StaticHandler
         )
         self._httpd.web_root = self._web_ui_dir  # type: ignore[attr-defined]
+        self._httpd.swap_buttons = self.swap_buttons  # type: ignore[attr-defined]
 
         https_ssl = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         https_ssl.load_cert_chain(certfile=self.certfile, keyfile=self.keyfile)
@@ -340,6 +384,7 @@ class VRTeleop:
         self._running = True
 
         host_display = _get_local_ip() if self.host == "0.0.0.0" else self.host
+        btn_mode = "trigger=臂, grip=夹爪" if self.swap_buttons else "grip=臂, trigger=夹爪"
         print(
             f"\n{'='*60}\n"
             f"  VR Teleop started\n"
@@ -347,8 +392,11 @@ class VRTeleop:
             f"  WSS   : wss://{host_display}:{self.ws_port}\n"
             f"  Rate  : {self.control_rate} Hz\n"
             f"  Scale : {self.vr_to_robot_scale}\n"
+            f"  Axis  : mapping={self.axis_mapping}, sign={tuple(self.axis_sign)}\n"
+            f"  Buttons: {btn_mode}\n"
+            f"  Speed : {SPEED_SCALES[self._speed_level]} (level {self._speed_level+1}/3)\n"
             f"\n  Open the HTTPS URL on Quest 3 browser.\n"
-            f"  Grip = activate arm, Trigger = gripper.\n"
+            f"  X = speed up, Y = speed down.\n"
             f"  Ctrl+C to quit.\n"
             f"{'='*60}\n"
         )
@@ -369,6 +417,7 @@ class VRTeleop:
                 self._httpd_thread.join(timeout=5)
             self._httpd = None
             self._httpd_thread = None
+        print("\n\033[1m\033[96m⏹  VR Teleop 已停止\033[0m")
         logger.info("VR Teleop stopped.")
 
     def run(self) -> None:
@@ -389,6 +438,13 @@ class VRTeleop:
         """Handle a single VR client WebSocket connection."""
         addr = websocket.remote_address
         logger.info("VR client connected: %s", addr)
+        print(
+            f"\n\033[1m\033[92m"
+            f"{'='*60}\n"
+            f"  🎮  VR 已连接 — 开始操控!\n"
+            f"{'='*60}"
+            f"\033[0m\n"
+        )
 
         try:
             async for message in websocket:
@@ -407,6 +463,9 @@ class VRTeleop:
                 self._left.reset()
                 self._right.reset()
             logger.info("VR client disconnected: %s", addr)
+            print(
+                f"\n\033[1m\033[93m⚠️  VR 已断开\033[0m\n"
+            )
 
     def _process_vr_data(self, data: Dict) -> None:
         """Parse incoming VR JSON and update controller states.
@@ -417,7 +476,8 @@ class VRTeleop:
               "timestamp": ...,
               "leftController":  { position, quaternion, gripActive, trigger, ... },
               "rightController": { position, quaternion, gripActive, trigger, ... },
-              "headset": { ... }
+              "headset": { ... },
+              "speedLevel": 0|1|2
             }
         """
         with self._lock:
@@ -425,6 +485,16 @@ class VRTeleop:
                 self._update_hand(self._left, data["leftController"])
             if "rightController" in data:
                 self._update_hand(self._right, data["rightController"])
+
+            # Speed level
+            new_speed = data.get("speedLevel", self._speed_level)
+            if isinstance(new_speed, int) and 0 <= new_speed <= 2:
+                if new_speed != self._speed_level:
+                    self._speed_level = new_speed
+                    print(
+                        f"\033[1m\033[94m[SPEED] 档位: {self._speed_level+1}/3 "
+                        f"(scale={SPEED_SCALES[self._speed_level]})\033[0m"
+                    )
 
     def _update_hand(self, state: _ControllerState, d: Dict) -> None:
         """Update a single controller state from VR data."""
@@ -461,6 +531,13 @@ class VRTeleop:
             logger.info(
                 "%s grip ACTIVATED — origin recorded", state.hand.upper()
             )
+            # First-time activation hint
+            if state.hand == "left" and not self._left_activated_once:
+                self._left_activated_once = True
+                print(f"\033[1m\033[92m[LEFT] 臂激活 ✓\033[0m")
+            elif state.hand == "right" and not self._right_activated_once:
+                self._right_activated_once = True
+                print(f"\033[1m\033[92m[RIGHT] 臂激活 ✓\033[0m")
         elif not grip and state.grip_active:
             # Grip released
             state.grip_active = False
@@ -529,12 +606,13 @@ class VRTeleop:
         # --- Position delta ---
         raw_delta = (state.current_position - state.origin_position)
 
-        # Apply axis mapping + sign + scale
+        # Apply axis mapping + sign + scale + speed
+        speed_scale = SPEED_SCALES[self._speed_level]
         delta_xyz = np.zeros(3)
         for robot_i in range(3):
             vr_i = self.axis_mapping[robot_i]
             delta_xyz[robot_i] = raw_delta[vr_i] * self.axis_sign[robot_i]
-        delta_xyz *= self.vr_to_robot_scale
+        delta_xyz *= self.vr_to_robot_scale * speed_scale
 
         # --- Rotation delta ---
         droll = 0.0
@@ -559,18 +637,11 @@ class VRTeleop:
             dpitch = math.radians(-pitch_deg) * self.rot_scale
 
         # --- Gripper ---
-        # trigger > 0.5 => open (target 0.0), trigger <= 0.5 => closed (target 1.0)
-        # Using target (not delta) — env in delta_eef mode treats gripper[6] as
-        # an additive delta.  We compute target based on current obs and desired.
-        # Simpler: directly output gripper target value.
-        # BUT delta_eef gripper is additive.  We need a different approach:
-        #   Just output a signed delta that drives toward the target.
-        #   We clamp in env.step anyway.
+        # trigger > 0.5 => open (0.0).  Push gripper toward 0 with negative delta.
+        # trigger <= 0.5 => closed (1.0).  Push gripper toward 1 with positive delta.
         if state.trigger_value > 0.5:
-            # Want open (0.0).  Push gripper toward 0 with negative delta.
             gripper_delta = -0.1
         else:
-            # Want closed (1.0).  Push gripper toward 1 with positive delta.
             gripper_delta = 0.1
 
         return np.array(

@@ -4,6 +4,7 @@ Usage (on machine B with hardware):
 
     python scripts/teleop_vr.py
     python scripts/teleop_vr.py --scale 0.5 --rate 30
+    python scripts/teleop_vr.py --swap-buttons
     python scripts/teleop_vr.py --https-port 9443 --ws-port 9442
 """
 
@@ -35,11 +36,15 @@ def main():
     )
     parser.add_argument(
         "--scale", type=float, default=1.0,
-        help="VR position delta → robot delta scale factor. Default: 1.0",
+        help="VR position delta -> robot delta scale factor. Default: 1.0",
     )
     parser.add_argument(
         "--rot-scale", type=float, default=1.0,
         help="Rotation delta scale factor. Default: 1.0",
+    )
+    parser.add_argument(
+        "--swap-buttons", action="store_true",
+        help="Swap trigger/grip roles: trigger=arm activate, grip=gripper.",
     )
     parser.add_argument(
         "--certfile", type=str, default=None,
@@ -66,6 +71,7 @@ def main():
         control_rate=args.rate,
         vr_to_robot_scale=args.scale,
         rot_scale=args.rot_scale,
+        swap_buttons=args.swap_buttons,
         certfile=args.certfile,
         keyfile=args.keyfile,
     )
@@ -73,6 +79,11 @@ def main():
     try:
         vr.run()
     finally:
+        print("\n正在回到初始位置...")
+        try:
+            env._go_home()
+        except Exception as e:
+            print(f"go_home 失败: {e}")
         env.close()
 
 
