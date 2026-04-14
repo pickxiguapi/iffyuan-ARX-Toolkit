@@ -332,11 +332,17 @@ function addControllerTrackingButton() {
     console.warn('WebXR not supported.');
     return;
   }
-  navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-    if (!supported) {
-      console.warn('immersive-ar not supported.');
+
+  // Try immersive-ar first, fall back to immersive-vr
+  Promise.all([
+    navigator.xr.isSessionSupported('immersive-ar').catch(() => false),
+    navigator.xr.isSessionSupported('immersive-vr').catch(() => false),
+  ]).then(([arOk, vrOk]) => {
+    if (!arOk && !vrOk) {
+      console.warn('Neither immersive-ar nor immersive-vr supported.');
       return;
     }
+    console.log(`WebXR support: AR=${arOk}, VR=${vrOk}`);
 
     const btn = document.createElement('button');
     btn.id = 'start-tracking-button';
@@ -353,6 +359,9 @@ function addControllerTrackingButton() {
       text-align: center;
       letter-spacing: 4px;
       animation: pulse 2s ease-in-out infinite;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      user-select: none;
     `;
 
     // Add pulse animation
@@ -365,10 +374,17 @@ function addControllerTrackingButton() {
     `;
     document.head.appendChild(style);
 
-    btn.onclick = () => {
+    let entering = false;
+    function enterVR() {
+      if (entering) return;  // debounce
+      entering = true;
+      console.log('Button pressed — entering VR...');
+      btn.textContent = '正在进入...';
       const sceneEl = document.querySelector('a-scene');
       if (sceneEl) {
         sceneEl.enterVR(true).then(() => {
+          console.log('Entered VR successfully');
+          entering = false;
           // Beep confirmation sound
           try {
             const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -383,16 +399,31 @@ function addControllerTrackingButton() {
           } catch(e) { /* audio not critical */ }
         }).catch(err => {
           console.error('Failed to enter VR:', err);
-          alert('Failed to start AR session: ' + err.message);
+          entering = false;
+          btn.textContent = '进入失败 — 再试一次';
+          setTimeout(() => { btn.textContent = '进入 VR 控制'; }, 2000);
         });
+      } else {
+        entering = false;
       }
-    };
+    }
+
+    // Multiple event types for Quest 3 compatibility
+    btn.addEventListener('click', enterVR);
+    btn.addEventListener('pointerup', (e) => {
+      e.preventDefault();
+      enterVR();
+    });
+
     document.body.appendChild(btn);
 
     const sceneEl = document.querySelector('a-scene');
     if (sceneEl) {
       sceneEl.addEventListener('enter-vr', () => { btn.style.display = 'none'; });
-      sceneEl.addEventListener('exit-vr', () => { btn.style.display = 'flex'; });
+      sceneEl.addEventListener('exit-vr', () => {
+        btn.style.display = 'block';
+        btn.textContent = '进入 VR 控制';
+      });
     }
   }).catch(err => console.error('XR check error:', err));
 }
