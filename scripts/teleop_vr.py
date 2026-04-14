@@ -55,6 +55,10 @@ def main():
         help="Swap trigger/grip roles: trigger=arm activate, grip=gripper.",
     )
     parser.add_argument(
+        "--lock-rotation", action="store_true",
+        help="Lock rotation — only position + gripper, no RPY.",
+    )
+    parser.add_argument(
         "--certfile", type=str, default=None,
         help="SSL cert file path. Default: auto-generate cert.pem",
     )
@@ -82,6 +86,7 @@ def main():
         ema_alpha=args.ema_alpha,
         deadzone=args.deadzone,
         swap_buttons=args.swap_buttons,
+        lock_rotation=args.lock_rotation,
         certfile=args.certfile,
         keyfile=args.keyfile,
     )

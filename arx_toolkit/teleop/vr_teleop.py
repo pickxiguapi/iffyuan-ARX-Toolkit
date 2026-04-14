@@ -292,6 +292,9 @@ class VRTeleop:
     swap_buttons : bool
         If True, swap trigger/grip roles: trigger=arm activate, grip=gripper.
         Default False: grip=arm activate, trigger=gripper.
+    lock_rotation : bool
+        If True, all rotation deltas are zeroed — only position + gripper.
+        Useful for debugging or when rotation mapping is not calibrated.
     certfile, keyfile : str or None
         Paths to SSL cert/key.  ``None`` = auto-generate in cwd.
     """
@@ -310,6 +313,7 @@ class VRTeleop:
         ema_alpha: float = DEFAULT_EMA_ALPHA,
         deadzone: float = DEFAULT_DEADZONE,
         swap_buttons: bool = False,
+        lock_rotation: bool = False,
         certfile: Optional[str] = None,
         keyfile: Optional[str] = None,
     ):
@@ -325,6 +329,7 @@ class VRTeleop:
         self.ema_alpha = ema_alpha
         self.deadzone = deadzone
         self.swap_buttons = swap_buttons
+        self.lock_rotation = lock_rotation
 
         # SSL
         self.certfile = certfile or "cert.pem"
@@ -412,6 +417,7 @@ class VRTeleop:
             f"  Scale : {self.vr_to_robot_scale}\n"
             f"  Axis  : mapping={self.axis_mapping}, sign={tuple(self.axis_sign)}\n"
             f"  Buttons: {btn_mode}\n"
+            f"  Rotation: {'LOCKED 🔒' if self.lock_rotation else 'enabled'}\n"
             f"  Speed : {SPEED_SCALES[self._speed_level]} (level {self._speed_level+1}/5)\n"
             f"  Smooth: EMA alpha={self.ema_alpha}, deadzone={self.deadzone*1000:.1f}mm\n"
             f"\n  Open the HTTPS URL on Quest 3 browser.\n"
@@ -654,7 +660,7 @@ class VRTeleop:
         """
         if not state.grip_active:
             # Hold position: zero delta for pose, but still control gripper
-            gripper_delta = -0.1 if state.trigger_value > 0.5 else 0.1
+            gripper_delta = -0.5 if state.trigger_value > 0.5 else 0.0
             action = np.zeros(7, dtype=np.float64)
             action[6] = gripper_delta
             return action
@@ -686,7 +692,8 @@ class VRTeleop:
         dyaw = 0.0
 
         if (
-            state.current_quaternion is not None
+            not self.lock_rotation
+            and state.current_quaternion is not None
             and state.origin_quaternion is not None
         ):
             # Z-axis rotation -> wrist roll
@@ -703,12 +710,12 @@ class VRTeleop:
             dpitch = math.radians(-pitch_deg) * self.rot_scale
 
         # --- Gripper ---
-        # trigger > 0.5 => open (0.0).  Push gripper toward 0 with negative delta.
-        # trigger <= 0.5 => closed (1.0).  Push gripper toward 1 with positive delta.
+        # trigger pressed => open (negative delta toward 0)
+        # trigger released => hold (no change)
         if state.trigger_value > 0.5:
-            gripper_delta = -0.1
+            gripper_delta = -0.5
         else:
-            gripper_delta = 0.1
+            gripper_delta = 0.0
 
         return np.array(
             [delta_xyz[0], delta_xyz[1], delta_xyz[2],
