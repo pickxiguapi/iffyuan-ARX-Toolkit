@@ -449,6 +449,7 @@ def convert(
             frame = {
                 "observation.state": state_batch[i],
                 "action": action_batch[i],
+                "task": task_name,
             }
 
             # Images: (C, H, W) → (H, W, C) → PIL
@@ -456,7 +457,7 @@ def convert(
                 img = Image.fromarray(cam_batches[cam][i].transpose(1, 2, 0))
                 frame[f"observation.images.{cam}"] = img
 
-            dataset.add_frame(frame, task=task_name)
+            dataset.add_frame(frame)
 
         dataset.save_episode()
 
