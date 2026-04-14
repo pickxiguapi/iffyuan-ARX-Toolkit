@@ -277,9 +277,9 @@ class VRTeleop:
         Default ``(2, 0, 1)`` maps VR→robot as:
         robot_x ← vr_z, robot_y ← vr_x, robot_z ← vr_y.
     axis_sign : tuple[float, float, float]
-        Sign flip per axis.  Default ``(-1.0, 1.0, 1.0)`` gives:
+        Sign flip per axis.  Default ``(-1.0, -1.0, 1.0)`` gives:
         robot_x = -vr_z (push forward → +X),
-        robot_y = +vr_x (move left → +Y),
+        robot_y = -vr_x (move left → +Y),
         robot_z = +vr_y (raise hand → +Z).
     rot_scale : float
         Multiplier applied to wrist rotation deltas (degrees -> radians).
@@ -305,7 +305,7 @@ class VRTeleop:
         control_rate: float = 50.0,
         vr_to_robot_scale: float = 1.0,
         axis_mapping: Tuple[int, int, int] = (2, 0, 1),
-        axis_sign: Tuple[float, float, float] = (-1.0, 1.0, 1.0),
+        axis_sign: Tuple[float, float, float] = (-1.0, -1.0, 1.0),
         rot_scale: float = 1.0,
         ema_alpha: float = DEFAULT_EMA_ALPHA,
         deadzone: float = DEFAULT_DEADZONE,
@@ -603,8 +603,10 @@ class VRTeleop:
             "lift": None,   # VR does not control lift
         }
 
-        # Only step if at least one arm is active
-        if left_action is not None or right_action is not None:
+        # Step if VR is connected (has position data)
+        has_vr_data = (self._left.current_position is not None or
+                       self._right.current_position is not None)
+        if has_vr_data:
             try:
                 self.env.step(action)
             except Exception as e:
@@ -645,12 +647,17 @@ class VRTeleop:
     def _compute_arm_action(self, state: _ControllerState) -> Optional[np.ndarray]:
         """Convert a single controller state to a 7D delta_eef action.
 
-        Returns None if the grip is not active (arm should hold position).
+        When grip is released, sends zero-delta to hold position instead of
+        None (which would let the arm drop under gravity).
 
-        Action layout: [dx, dy, dz, droll, dpitch, dyaw, gripper_target]
+        Action layout: [dx, dy, dz, droll, dpitch, dyaw, gripper_delta]
         """
         if not state.grip_active:
-            return None
+            # Hold position: zero delta for pose, but still control gripper
+            gripper_delta = -0.1 if state.trigger_value > 0.5 else 0.1
+            action = np.zeros(7, dtype=np.float64)
+            action[6] = gripper_delta
+            return action
 
         if (
             state.current_position is None
