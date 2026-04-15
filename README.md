@@ -16,6 +16,7 @@ ARX LIFT2 双臂移动操作机器人的模仿学习工具包。
 ## 目录
 
 - [硬件](#硬件)
+- [环境设计 (ARXEnv)](#环境设计-arxenv)
 - [安装](#安装)
 - [Step 1：启动 ROS2 节点](#step-1启动-ros2-节点)
 - [Step 2：测试环境](#step-2测试环境)
@@ -41,6 +42,236 @@ ARX LIFT2 双臂移动操作机器人的模仿学习工具包。
 
 ---
 
+## 环境设计 (ARXEnv)
+
+ARXEnv 是整个工具包的核心：一个 `step(action) → obs` 就能控制双臂 + 底盘 + 升降 + 相机的统一环境。遥操作、数据采集、模型部署全部基于这个接口，确保训练和部署时数据格式完全一致。
+
+### 设计哲学
+
+> **One `step(action)` controls the entire robot.**
+
+- 所有子系统（双臂、底盘、升降）通过一个 action dict 统一控制
+- 不想动的部分设为 `None`，不会发送任何指令
+- observation 是扁平 dict，所有值都是 numpy 数组，方便直接喂给模型
+
+### 初始化
+
+```python
+from arx_toolkit.env import ARXEnv
+import numpy as np
+
+env = ARXEnv(
+    action_mode="absolute_eef",      # delta_eef | absolute_eef | absolute_joint
+    camera_type="rgbd",               # rgb | rgbd
+    camera_view=("camera_l", "camera_h", "camera_r"),  # 订阅哪些相机
+    img_size=(640, 480),              # (W, H)，None = 不缩放
+)
+```
+
+| 参数 | 可选值 | 说明 |
+|------|--------|------|
+| `action_mode` | `delta_eef` / `absolute_eef` / `absolute_joint` | 臂的控制模式 |
+| `camera_type` | `rgb` / `rgbd` | `rgb` 只订阅彩色；`rgbd` 额外订阅深度 |
+| `camera_view` | 任意子集 | 要用哪几个相机，如只用头部 `("camera_h",)` |
+| `img_size` | `(W, H)` 或 `None` | 输出图像尺寸 |
+
+### Action 格式
+
+```python
+action = {
+    "left":  np.ndarray(7,) | None,   # 左臂 7D 命令
+    "right": np.ndarray(7,) | None,   # 右臂 7D 命令
+    "base":  np.ndarray(3,) | None,   # [vx, vy, vz] 底盘速度
+    "lift":  float | None,            # 升降高度 [0, 20]
+}
+obs = env.step(action)
+```
+
+**4 个 key 都必须写**，不想动的设 `None`。
+
+#### 臂 Action — 7D
+
+语义取决于 `action_mode`：
+
+| action_mode | 7D 含义 | 适用场景 |
+|-------------|---------|---------|
+| `delta_eef` | `[dx, dy, dz, droll, dpitch, dyaw, gripper_delta]` | 遥操作增量控制 |
+| `absolute_eef` | `[x, y, z, roll, pitch, yaw, gripper]` | **VLA 推理首选** |
+| `absolute_joint` | `[j0, j1, j2, j3, j4, j5, gripper]` | 关节级控制，**VLA 推理首选** |
+
+**单位约定：**
+
+- 位置 xyz：**米 (m)**，基坐标系
+- 姿态 rpy：**弧度 (rad)**
+- Gripper：归一化 **[0, 1]**，0 = 全开，1 = 全闭。支持连续值（如 0.5 = 半开）
+  - `delta_eef` 下 gripper 是增量，正值 = 更闭合
+  - 内部自动处理硬件值 `[-3.4, 0.0]` ↔ 归一化 `[0, 1]` 的转换
+
+#### 底盘 Action — 3D 速度
+
+| 索引 | 名称 | 范围 | 说明 |
+|------|------|------|------|
+| 0 | vx | [-1.5, 1.5] | 前进 / 后退 |
+| 1 | vy | [-1.5, 1.5] | 左移 / 右移 |
+| 2 | vz | [-2.0, 2.0] | 左转 / 右转 |
+
+#### 升降 Action — 标量
+
+- `height ∈ [0, 20]`，0 = 最低，20 = 最高
+
+### Observation 格式
+
+`obs` 是扁平 dict，所有值为 numpy 数组：
+
+**臂状态**（左右各一组，始终返回）：
+
+| Key | Shape | Dtype | 说明 |
+|-----|-------|-------|------|
+| `{side}_eef_pos` | (7,) | float32 | `[x, y, z, roll, pitch, yaw, gripper]` 末端位姿 |
+| `{side}_joint_pos` | (7,) | float32 | 6 个关节角 + gripper，gripper 归一化 [0,1] |
+
+其中 `{side}` = `left` 或 `right`。
+
+**底盘/升降状态**（始终返回）：
+
+| Key | Shape | Dtype | 说明 |
+|-----|-------|-------|------|
+| `base_height` | (1,) | float32 | 当前升降高度 [0, 20] |
+
+**相机图像**（取决于 `camera_type` 和 `camera_view`）：
+
+| Key | Shape | Dtype | 说明 |
+|-----|-------|-------|------|
+| `{cam}_color` | (H, W, 3) | uint8 | RGB 彩色图 |
+| `{cam}_aligned_depth_to_color` | (H, W) | uint16 | 深度图 (mm)，仅 `rgbd` 模式 |
+
+其中 `{cam}` ∈ camera_view，如 `camera_l`、`camera_h`、`camera_r`。
+
+**完整 obs 示例**（`camera_type="rgbd"`, `camera_view=("camera_l", "camera_h", "camera_r")`, `img_size=(640, 480)`）：
+
+```python
+obs = {
+    # ---- 左臂 ----
+    "left_eef_pos":    np.float32(7,),   # [x, y, z, roll, pitch, yaw, gripper]
+    "left_joint_pos":  np.float32(7,),   # [j0, j1, j2, j3, j4, j5, gripper]
+
+    # ---- 右臂 ----
+    "right_eef_pos":   np.float32(7,),
+    "right_joint_pos": np.float32(7,),
+
+    # ---- 底盘 / 升降 ----
+    "base_height":     np.float32(1,),   # [height]
+
+    # ---- 相机 (RGB) ----
+    "camera_l_color":  np.uint8(480, 640, 3),
+    "camera_h_color":  np.uint8(480, 640, 3),
+    "camera_r_color":  np.uint8(480, 640, 3),
+
+    # ---- 相机 (深度, 仅 rgbd 模式) ----
+    "camera_l_aligned_depth_to_color": np.uint16(480, 640),
+    "camera_h_aligned_depth_to_color": np.uint16(480, 640),
+    "camera_r_aligned_depth_to_color": np.uint16(480, 640),
+}
+```
+
+### 生命周期
+
+```python
+env = ARXEnv(action_mode="absolute_eef", camera_type="rgbd")
+
+obs = env.reset()       # 双臂回零 + 夹爪关闭 + 升降归零 + 底盘停止
+obs = env.step(action)  # 发送指令，返回新 observation
+
+env.close()             # 安全关闭（也通过 atexit 自动注册）
+```
+
+- `reset()` 会让双臂回到初始位姿并关闭夹爪
+- `close()` 会停底盘、回零双臂、关闭夹爪、释放 ROS2 节点
+- 即使程序异常退出，`atexit` 也会自动调用 `close()`
+
+### 便捷方法
+
+除了 `step(action)` 主接口外，还提供独立控制底盘/升降的便捷方法：
+
+```python
+env.step_base(vx=0.5, vy=0, vz=0)      # 仅控制底盘
+env.step_lift(height=10)                 # 仅控制升降
+env.step_base_lift(vx=0, vy=0, vz=0.15, height=2.0)  # 底盘+升降联合
+
+env.get_observation(                     # 获取观测（可过滤）
+    include_arm=True,
+    include_camera=True,
+    include_base=True,
+)
+```
+
+### 特殊模式
+
+```python
+env.set_mode(0, side="both")   # 柔顺模式 (soft)
+env.set_mode(1, side="both")   # 回零 (home)
+env.set_mode(2, side="left")   # 保护模式 (protect)
+env.set_mode(3, side="right")  # 重力补偿 / 拖动示教 (gravity)
+```
+
+### 内部架构
+
+```
+┌───────────────────────────────────────┐
+│  用户代码 (VLA / Teleop / Collector)   │
+├───────────────────────────────────────┤
+│  ARXEnv                               │  ← 统一 API
+│  · action 验证 & 模式转换              │
+│  · gripper 归一化 [0,1] ↔ [-3.4,0]   │
+│  · delta_eef 四元数旋转（避免万向锁）  │
+├───────────────────────────────────────┤
+│  RobotIO (ROS2 Node)                  │  ← 内部通信层
+│  · Pub: arm_cmd_{l,r}, base_cmd      │
+│  · Sub: arm_status_{l,r}, cameras     │
+│  · 3 相机 ApproximateTimeSynchronizer  │
+│  · 后台异步视频保存                    │
+├───────────────────────────────────────┤
+│  ROS2 / CANBus / 硬件                 │
+└───────────────────────────────────────┘
+```
+
+### 典型使用模式
+
+**遥操作 + 数据采集：**
+
+```python
+env = ARXEnv(action_mode="absolute_joint", camera_type="rgbd")
+obs = env.reset()
+
+while collecting:
+    action = teleop.read()    # 从遥操作设备读取 action
+    obs = env.step(action)    # 执行 + 获取观测
+    recorder.push(obs, action)  # 存储
+```
+
+**VLA 推理部署：**
+
+```python
+env = ARXEnv(action_mode="absolute_eef", camera_type="rgb")
+obs = env.reset()
+
+policy = load_vla_model("pi0.5.pt")
+for step in range(max_steps):
+    images = {k: v for k, v in obs.items() if "color" in k}
+    state = np.concatenate([obs["left_joint_pos"], obs["right_joint_pos"]])  # 14D
+    action = policy.predict(images, state)  # → 18D
+    obs = env.step({
+        "left":  action[:7],
+        "right": action[7:14],
+        "base":  action[14:17],
+        "lift":  action[17],
+    })
+```
+
+> 详细实现见 `arx_toolkit/env/arx_env.py` 文件头 docstring 和 `docs/1.启动和测试环境.md`。
+
+---
+
 ## 安装
 
 ### 前置条件
@@ -54,14 +285,12 @@ ARX LIFT2 双臂移动操作机器人的模仿学习工具包。
 ```bash
 git clone https://github.com/pickxiguapi/iffyuan-ARX-Toolkit.git
 cd iffyuan-ARX-Toolkit
-
-# 拉取 submodule（ARX 官方 ROS2 驱动）
-git submodule update --init --recursive
 ```
 
 ### 创建虚拟环境 & 安装
 
-> **⚠️ 必须使用虚拟环境。** ROS2 绑定系统 Python，直接 pip install 会污染系统环境或产生版本冲突。用 uv 创建的虚拟环境可以继承系统 Python 的 ROS2 包（`rclpy`、`cv_bridge` 等），同时隔离项目依赖。
+> **⚠️ 必须使用uv虚拟环境，不允许使用conda和原生pip。** ROS2 绑定系统 Python，直接 pip install 会污染系统环境或产生版本冲突。用 uv 创建的虚拟环境可以继承系统 Python 的 ROS2 包（`rclpy`、`cv_bridge` 等），同时隔离项目依赖。  
+> uv下面所有的命令都在pip前加uv即可，例如uv pip install
 
 ```bash
 # 1. 创建虚拟环境（--system-site-packages 继承 ROS2 包）
@@ -70,13 +299,11 @@ uv venv --system-site-packages
 # 2. 激活虚拟环境
 source .venv/bin/activate
 
-# 3. 安装（一条命令装完所有依赖，包括 lerobot）
+# 3. 安装
 uv pip install -e .
 ```
 
-安装完成后所有功能（Env、Teleop、Collect、LeRobot 转换）都可用。
-
-### 后续每次使用
+### 激活uv环境
 
 ```bash
 cd /path/to/iffyuan-ARX-Toolkit
@@ -183,7 +410,7 @@ python scripts/teleop_leader_follower.py
 | 暂停中 | Enter | 恢复 |
 | 暂停中 | Space | 双臂回零 & 退出 |
 
-**调参示例：**
+**其他参数：**
 
 ```bash
 # 右臂当 leader
@@ -197,6 +424,8 @@ python scripts/teleop_leader_follower.py --alpha 1.0 --deadband 0.0
 ```
 
 ### 方式 B：VR 遥操作（Quest 3）
+
+> 注意：已经完全接通，但是不够丝滑，单臂操作优先使用Leader-Follower。  
 
 Quest 3 头显双臂遥操作，左手柄控制左臂，右手柄控制右臂。
 
@@ -222,14 +451,11 @@ Quest 3 浏览器打开 `https://<机器人IP>:8443` → 点击 "Start Controlle
 
 通过遥操作采集数据，存为 Zarr 格式。
 
-### 基本采集
-
 ```bash
 python scripts/collect_data.py \
     --dataset datasets/pick_cup.zarr \
-    --episodes 50 \
+    --episodes 5 \
     --teleop leader_follower \
-    --leader-side left \
     --hz 30 \
     --cam-mode rgbd \
     --image-size 640 480 \
@@ -253,7 +479,7 @@ python scripts/collect_data.py \
 
 ### 断点续采
 
-已有的 episode 会被自动识别。`--episodes` 是**目标总数**，不是新增数：
+使用同样的 **dataset文件名** ，已有的 episode 会被自动识别。`--episodes` 是**目标总数**，不是新增数：
 
 ```bash
 # 第一次采了 20 个，中断了
@@ -286,15 +512,15 @@ python scripts/collect_data.py \
 dataset.zarr/
 ├── data/
 │   ├── rgb_camera_{l,h,r}     (N, 3, H, W) uint8       3 相机 RGB
-│   ├── depth_camera_{l,h,r}   (N, 1, H, W) uint16      深度 [rgbd 模式]
-│   ├── left_eef_pos           (N, 7) float32            末端位姿 + gripper
-│   ├── left_joint_pos         (N, 7) float32            6 关节 + gripper
-│   ├── right_eef_pos          (N, 7) float32
-│   ├── right_joint_pos        (N, 7) float32
+│   ├── depth_camera_{l,h,r}   (N, 1, H, W) uint16      3 相机 深度 [rgbd 模式]
+│   ├── left_eef_pos           (N, 7) float32            state: 末端位姿 + gripper
+│   ├── left_joint_pos         (N, 7) float32            state: 6 关节 + gripper
+│   ├── right_eef_pos          (N, 7) float32            state: 末端位姿 + gripper
+│   ├── right_joint_pos        (N, 7) float32            state: 6 关节 + gripper
 │   ├── base_height            (N, 1) float32            升降高度
 │   ├── action_left            (N, 7) float32            动作: 6 joint + gripper
-│   ├── action_right           (N, 7) float32
-│   ├── action_base            (N, 3) float32            底盘速度
+│   ├── action_right           (N, 7) float32            动作: 6 joint + gripper
+│   ├── action_base            (N, 3) float32            底盘速度 vx, vy, vz
 │   ├── action_lift            (N, 1) float32            升降
 │   ├── timestamp              (N,) float64
 │   └── episode                (N,) uint16
@@ -413,43 +639,7 @@ python scripts/convert_to_lerobot_v3.py ... --episodes 10
 
 ### ARXEnv
 
-```python
-from arx_toolkit.env import ARXEnv
-
-env = ARXEnv(
-    action_mode="absolute_eef",      # delta_eef | absolute_eef | absolute_joint
-    camera_type="rgbd",               # rgb | rgbd
-    camera_view=("camera_l", "camera_h", "camera_r"),
-    img_size=(640, 480),
-)
-
-obs = env.reset()
-obs = env.step({
-    "left":  np.ndarray(7,) | None,   # 语义取决于 action_mode
-    "right": np.ndarray(7,) | None,
-    "base":  np.ndarray(3,) | None,   # [vx, vy, vz]
-    "lift":  float | None,            # height [0, 20]
-})
-env.close()
-```
-
-**Action 模式：**
-
-| action_mode | arm 7D 含义 |
-|-------------|-------------|
-| `delta_eef` | [dx, dy, dz, dr, dp, dy, gripper_delta] |
-| `absolute_eef` | [x, y, z, roll, pitch, yaw, gripper] |
-| `absolute_joint` | [j0, j1, j2, j3, j4, j5, gripper] |
-
-**Observation：**
-
-| Key | Shape | 说明 |
-|-----|-------|------|
-| `{side}_eef_pos` | (7,) | [x, y, z, roll, pitch, yaw, gripper] |
-| `{side}_joint_pos` | (7,) | 6 关节角 + gripper，归一化 [0,1] |
-| `base_height` | (1,) | 升降高度 [0, 20] |
-| `{cam}_color` | (H, W, 3) | RGB uint8 |
-| `{cam}_aligned_depth_to_color` | (H, W) | 深度 uint16 (mm)，仅 rgbd 模式 |
+详见上方 [环境设计 (ARXEnv)](#环境设计-arxenv) 章节。
 
 ### LeaderFollowerTeleop
 
@@ -539,4 +729,4 @@ iffyuan-ARX-Toolkit/
 
 ## License
 
-MIT
+Apache2.0
