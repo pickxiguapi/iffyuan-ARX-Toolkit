@@ -296,7 +296,7 @@ source .venv/bin/activate
 所有后续操作（环境测试、遥操作、数据采集）都需要先启动底层 ROS2 节点。
 
 ```bash
-cd scripts
+cd ros_scripts
 bash all.sh
 ```
 
