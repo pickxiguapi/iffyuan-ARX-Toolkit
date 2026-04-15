@@ -705,6 +705,7 @@ iffyuan-ARX-Toolkit/
 | [2-1. 主从遥操作](docs/2-1.主从遥操作.md) | Leader-follower 调参与技术细节 |
 | [2-2. VR 遥操作](docs/2-2.VR遥操作.md) | Quest 3 配置与坐标校准 |
 | [3. 数据采集](docs/3.数据采集.md) | 完整采集流程 + LeRobot 转换 |
+| [4. Web 键盘控制](docs/4.Web键盘控制.md) | 浏览器内键盘遥操作 + Mock 调试 |
 
 ## License
 
