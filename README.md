@@ -296,7 +296,7 @@ source .venv/bin/activate
 所有后续操作（环境测试、遥操作、数据采集）都需要先启动底层 ROS2 节点。
 
 ```bash
-cd /home/arx/Arx_Lift2s/Script
+cd scripts
 bash all.sh
 ```
 
@@ -444,7 +444,7 @@ python scripts/collect_data.py \
 ### 操作流程
 
 ```
-启动 → 等待就绪
+ → 等待就绪
   │
   ├── Space    → 开始录制当前 episode
   │   └── 拖动 leader 臂，follower 跟随，采集中...
@@ -626,7 +626,7 @@ python scripts/convert_to_lerobot_v3.py ... --episodes 10
 from arx_toolkit.teleop import LeaderFollowerTeleop
 
 teleop = LeaderFollowerTeleop(env, leader_side="left", control_rate=50)
-teleop.start()                   # 启动后台控制线程
+teleop.start()                   # 后台控制线程
 cmd = teleop.last_command        # 最新 action dict（供 Collector 读取）
 teleop.stop()                    # 停止
 teleop.run_interactive()         # 或：交互式运行（阻塞）
@@ -638,7 +638,7 @@ teleop.run_interactive()         # 或：交互式运行（阻塞）
 from arx_toolkit.teleop import VRTeleop
 
 vr = VRTeleop(env, https_port=8443, ws_port=8442, control_rate=20)
-vr.run()  # 阻塞：启动 HTTPS + WebSocket + 控制循环
+vr.run()  # 阻塞： HTTPS + WebSocket + 控制循环
 ```
 
 ### Collector
