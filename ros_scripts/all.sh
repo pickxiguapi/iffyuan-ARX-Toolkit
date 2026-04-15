@@ -1,31 +1,31 @@
 #!/bin/bash
 
-workspace=$(pwd)
 source ~/.bashrc
+cd /home/arx/Arx_Lift2s/Src || exit 1
 
 # CAN
-gnome-terminal -t "can1" -x sudo bash -c "cd ${workspace};cd ..  ; cd Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can1.sh; exec bash;"
+gnome-terminal -t "can1" -x sudo bash -c "cd LIFT/ARX_CAN/arx_can && sudo bash arx_can1.sh; exec bash;"
 sleep 0.5
-gnome-terminal -t "can3" -x sudo bash -c "cd ${workspace};cd ..  ; cd Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can3.sh; exec bash;"
+gnome-terminal -t "can3" -x sudo bash -c "cd LIFT/ARX_CAN/arx_can && sudo bash arx_can3.sh; exec bash;"
 sleep 0.5
-gnome-terminal -t "can5" -x sudo bash -c "cd ${workspace};cd ..  ; cd Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can5.sh; exec bash;"
+gnome-terminal -t "can5" -x sudo bash -c "cd LIFT/ARX_CAN/arx_can && sudo bash arx_can5.sh; exec bash;"
 
 sleep 1
 
-#body&lift
-gnome-terminal -t "body&lift" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/body/ROS2; source install/setup.bash && ros2 launch arx_lift_controller lift.launch.py; exec bash;"
+# body&lift
+gnome-terminal -t "body&lift" -x bash -c "cd LIFT/body/ROS2 && source install/setup.bash && ros2 launch arx_lift_controller lift.launch.py; exec bash;"
 
 sleep 1
 
-#left&right arm
-gnome-terminal -t "left&right" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/ARX_X5/ROS2/X5_ws; source install/setup.bash && ros2 launch arx_x5_controller v2_double_arm.launch.py; exec bash;"
-# gnome-terminal -t "left" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/ARX_X5/ROS2/X5_ws; source install/setup.bash && ros2 launch arx_x5_controller v2_single_arm.launch.py; exec bash;"
+# left&right arm
+gnome-terminal -t "left&right" -x bash -c "cd LIFT/ARX_X5/ROS2/X5_ws && source install/setup.bash && ros2 launch arx_x5_controller v2_double_arm.launch.py; exec bash;"
+# gnome-terminal -t "left" -x bash -c "cd LIFT/ARX_X5/ROS2/X5_ws && source install/setup.bash && ros2 launch arx_x5_controller v2_single_arm.launch.py; exec bash;"
 
 sleep 1
 
 # camera_h
-gnome-terminal -t "h_camera" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/realsense; \
-  source install/setup.bash && ros2 launch realsense2_camera rs_launch.py\
+gnome-terminal -t "h_camera" -x bash -c "cd LIFT/realsense && \
+  source install/setup.bash && ros2 launch realsense2_camera rs_launch.py \
   align_depth.enable:=true \
   pointcloud.enable:=true \
   enable_sync:=true \
@@ -42,12 +42,13 @@ gnome-terminal -t "h_camera" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/r
   depth_module.depth_profile:=640x480x60 \
   depth_module.enable_auto_exposure:=false \
   depth_module.exposure:=12750 \
-  depth_module.gain:=16;exec bash;"
+  depth_module.gain:=16; exec bash;"
 
 sleep 1
+
 # camera_l
-gnome-terminal -t "l_camera" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/realsense; \
-  source install/setup.bash && ros2 launch realsense2_camera rs_launch.py\
+gnome-terminal -t "l_camera" -x bash -c "cd LIFT/realsense && \
+  source install/setup.bash && ros2 launch realsense2_camera rs_launch.py \
   align_depth.enable:=true \
   pointcloud.enable:=true \
   enable_sync:=true \
@@ -64,12 +65,13 @@ gnome-terminal -t "l_camera" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/r
   depth_module.depth_profile:=640x480x60 \
   depth_module.enable_auto_exposure:=false \
   depth_module.exposure:=12750 \
-  depth_module.gain:=16;exec bash;"
+  depth_module.gain:=16; exec bash;"
 
 sleep 1
+
 # camera_r
-gnome-terminal -t "r_camera" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/realsense; \
-  source install/setup.bash && ros2 launch realsense2_camera rs_launch.py\
+gnome-terminal -t "r_camera" -x bash -c "cd LIFT/realsense && \
+  source install/setup.bash && ros2 launch realsense2_camera rs_launch.py \
   align_depth.enable:=true \
   pointcloud.enable:=true \
   enable_sync:=true \
@@ -86,4 +88,4 @@ gnome-terminal -t "r_camera" -x  bash -c "cd ${workspace}; cd .. ; cd Src/LIFT/r
   depth_module.depth_profile:=640x480x60 \
   depth_module.enable_auto_exposure:=false \
   depth_module.exposure:=12750 \
-  depth_module.gain:=16;exec bash;"
+  depth_module.gain:=16; exec bash;"
