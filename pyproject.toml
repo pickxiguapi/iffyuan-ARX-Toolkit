@@ -15,10 +15,11 @@ dependencies = [
     "numcodecs",
     "scipy",
     "websockets",
+    "lerobot>=0.5.0",
+    "Pillow",
 ]
 
 [project.optional-dependencies]
-lerobot = ["lerobot>=0.5.0", "Pillow"]
 dev = ["pytest", "ruff"]
 
 [tool.setuptools.packages.find]

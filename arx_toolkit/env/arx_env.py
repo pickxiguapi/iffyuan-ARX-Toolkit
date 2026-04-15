@@ -622,11 +622,6 @@ class ARXEnv:
         if side not in {"left", "right", "both"}:
             raise ValueError(f"Invalid side={side!r}")
 
-        # mode=1 (home) is special: move to initial pose
-        if mode == 1:
-            self._go_home(side=side)
-            return
-
         targets = ("left", "right") if side == "both" else (side,)
         status = self.node.get_robot_status()
 
@@ -663,24 +658,22 @@ class ARXEnv:
             pass
         return cmd
 
-    def _go_home(self, side: Side = "both", close_gripper: bool = True):
-        """Move arm(s) to initial pose, optionally closing grippers.
+    def _go_home(self, side: Side = "both"):
+        """Send mode=1 (home) to the firmware — arms return to factory initial pose.
 
         Args:
             side: Which arm(s) to home.
-            close_gripper: If True, set gripper to 1.0 (fully closed).
         """
-        home = np.zeros(7, dtype=np.float32)
-        if close_gripper:
-            home[6] = 1.0  # gripper normalized: 1.0 = fully closed
-        if side == "both":
-            action = {"left": home.copy(), "right": home.copy()}
-        else:
-            action = {side: home.copy()}
+        targets = ("left", "right") if side == "both" else (side,)
+        status = self.node.get_robot_status()
 
-        # Use absolute_eef to send home pose regardless of current action_mode
-        self._apply_absolute_eef(action)
-        logger.info("%s arm(s) homed", side)
+        for target in targets:
+            cmd = self._build_mode_cmd(1, status.get(target))
+            ok = self.node.send_control_msg(target, cmd)
+            if not ok:
+                logger.warning("go_home (mode=1) failed for %s", target)
+
+        logger.info("%s arm(s) homed (mode=1)", side)
 
     # ------------------------------------------------------------------
     # Public API — Lifecycle

@@ -71,7 +71,7 @@ def _check_deps():
             missing.append("Pillow" if pkg == "PIL" else pkg)
     if missing:
         print(f"[ERROR] 缺少依赖: {', '.join(missing)}")
-        print("  pip install -e '.[lerobot]'")
+        print("  uv pip install -e .")
         sys.exit(1)
 
 
