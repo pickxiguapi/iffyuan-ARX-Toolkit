@@ -214,27 +214,6 @@ env.set_mode(2, side="left")   # 保护模式 (protect)
 env.set_mode(3, side="right")  # 重力补偿 / 拖动示教 (gravity)
 ```
 
-### 内部架构
-
-```
-┌───────────────────────────────────────┐
-│  用户代码 (VLA / Teleop / Collector)   │
-├───────────────────────────────────────┤
-│  ARXEnv                               │  ← 统一 API
-│  · action 验证 & 模式转换              │
-│  · gripper 归一化 [0,1] ↔ [-3.4,0]   │
-│  · delta_eef 四元数旋转（避免万向锁）  │
-├───────────────────────────────────────┤
-│  RobotIO (ROS2 Node)                  │  ← 内部通信层
-│  · Pub: arm_cmd_{l,r}, base_cmd      │
-│  · Sub: arm_status_{l,r}, cameras     │
-│  · 3 相机 ApproximateTimeSynchronizer  │
-│  · 后台异步视频保存                    │
-├───────────────────────────────────────┤
-│  ROS2 / CANBus / 硬件                 │
-└───────────────────────────────────────┘
-```
-
 ### 典型使用模式
 
 **遥操作 + 数据采集：**
@@ -252,7 +231,7 @@ while collecting:
 **VLA 推理部署：**
 
 ```python
-env = ARXEnv(action_mode="absolute_eef", camera_type="rgb")
+env = ARXEnv(action_mode="delta_eef", camera_type="rgb")
 obs = env.reset()
 
 policy = load_vla_model("pi0.5.pt")
@@ -268,7 +247,7 @@ for step in range(max_steps):
     })
 ```
 
-> 详细实现见 `arx_toolkit/env/arx_env.py` 文件头 docstring 和 `docs/1.启动和测试环境.md`。
+> 详细实现见 `arx_toolkit/env/arx_env.py` 文件头。
 
 ---
 
