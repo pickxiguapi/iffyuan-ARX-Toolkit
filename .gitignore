@@ -24,6 +24,10 @@ Thumbs.db
 # Claude
 CLAUDE.md
 
+# Large assets (submodule / URDF kept locally)
+src/
+urdf_lift2/
+
 # ROS2 build artifacts
 log/
 install/
