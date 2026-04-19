@@ -448,8 +448,10 @@ python scripts/collect_data.py \
   │
   ├── Space    → 开始录制当前 episode
   │   └── 拖动 leader 臂，follower 跟随，采集中...
-  │       └── Enter → 结束当前 episode，保存数据
-  │           └── 自动进入下一个 episode 的等待
+    │       └── Enter → 结束录制并确认
+    │           ├── S → 保存（数据 + 视频）并落盘
+    │           └── D → 丢弃（不落盘）
+    │               └── 自动进入下一个 episode 的等待
   │
   └── Ctrl+C  → 退出采集，输出最终总结
 ```
@@ -458,7 +460,7 @@ python scripts/collect_data.py \
 
 ### 断点续采
 
-使用同样的 **dataset文件名** ，已有的 episode 会被自动识别。`--episodes` 是**目标总数**，不是新增数：
+使用同样的 **dataset文件名** ，已有的 episode 会被自动识别。`--episodes` 是**目标总数**，不是新增数；按 `D` 丢弃不会消耗目标条数：
 
 ```bash
 # 第一次采了 20 个，中断了

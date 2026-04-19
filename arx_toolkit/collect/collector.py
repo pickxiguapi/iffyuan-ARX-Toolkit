@@ -13,7 +13,7 @@ thread runs independently; Collector just samples ``action_source()`` each tick.
 Features:
   - 定频采集 (``--hz``, 默认 30 Hz)
   - 断点续采 (``--episodes N`` 表示目标总数)
-  - 键盘控制 (raw terminal: Space 开始 / Enter 结束 / Ctrl+C 退出)
+    - 键盘控制 (raw terminal: Space 开始 / Enter 结束并确认 / Ctrl+C 退出)
   - Episode 崩溃恢复（单个 episode 报错不杀采集）
   - 启动横幅 + Episode 摘要 + 最终总结
   - 可选保存回放视频 (``--save-video``)
@@ -295,7 +295,7 @@ class Collector:
             lines.append("│  新建数据集")
         lines.append(f"│  本次采集 : {target_new} episodes (目标总数 {self.num_episodes})")
         lines.append("├──────────────────────────────────────────────────────┤")
-        lines.append("│  Space: 开始录制 | Enter: 结束 | Ctrl+C: 退出       │")
+        lines.append("│  Space: 开始录制 | Enter: 结束并确认 | Ctrl+C: 退出 │")
         lines.append("└──────────────────────────────────────────────────────┘")
         lines.append("")
         print("\r\n".join(lines) + "\r\n")
@@ -383,15 +383,19 @@ class Collector:
         try:
             kb.start()
 
-            for ep_idx in range(target_new):
+            while episodes_saved < target_new:
                 current_ep = start_ep + episodes_saved
 
                 try:
-                    stats = self._run_episode(current_ep, ep_idx, target_new, data, kb)
+                    stats = self._run_episode(
+                        current_ep=current_ep,
+                        saved_idx=episodes_saved,
+                        target_new=target_new,
+                        data=data,
+                        kb=kb,
+                    )
 
-                    if stats is None:
-                        print(f"\r\n  Episode {current_ep}: 跳过 (0 steps)\r\n")
-                    else:
+                    if stats is not None:
                         episodes_saved += 1
                         _compute_episode_ends(data, meta)
                         self._print_episode_summary(
@@ -433,15 +437,15 @@ class Collector:
     def _run_episode(
         self,
         current_ep: int,
-        ep_idx: int,
+        saved_idx: int,
         target_new: int,
         data: zarr.Group,
         kb: _KeyboardListener,
     ) -> EpisodeStats | None:
         """Record one episode. Returns EpisodeStats or None if 0 steps."""
         print(
-            f"\r\n=== Episode {current_ep} ({ep_idx + 1}/{target_new}) ===\r\n"
-            f"  Space: start recording | Enter: end recording | Ctrl+C: abort\r\n"
+            f"\r\n=== Episode {current_ep} ({saved_idx + 1}/{target_new}) ===\r\n"
+            f"  Space: start recording | Enter: end & confirm | Ctrl+C: abort\r\n"
         )
 
         # --- Wait for start (space key) ---
@@ -457,21 +461,16 @@ class Collector:
 
         dt = 1.0 / self.hz
 
-        # --- Video writers (optional) ---
-        video_writers = {}
+        # --- Video frame buffer (optional) ---
+        video_frames: dict[str, list[np.ndarray]] = {}
+        video_dir = ""
         if self.save_video:
             base = os.path.splitext(self.dataset_path)[0]
             video_dir = f"{base}_videos"
             os.makedirs(video_dir, exist_ok=True)
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            size = (self.image_w, self.image_h)
             for cam in _CAM_NAMES:
-                vw = cv2.VideoWriter(
-                    f"{video_dir}/ep{current_ep}_{cam}.mp4",
-                    fourcc, self.video_fps, size,
-                )
-                video_writers[cam] = vw
-            logger.info("Saving video to: %s/ep%d_*.mp4", video_dir, current_ep)
+                video_frames[cam] = []
+            logger.info("Video buffering enabled: will save after confirmation.")
 
         # --- Buffer ---
         buffer: dict[str, list] = {
@@ -491,129 +490,155 @@ class Collector:
         steps = 0
         t_start = time.time()
 
-        try:
-            while True:
-                t_loop = time.monotonic()
+        while True:
+            t_loop = time.monotonic()
 
-                key = kb.get_key()
-                if key == "\r":
-                    print(f"\r\n  Episode {current_ep} ended.\r\n")
-                    break
-                elif key == "\x03":
-                    raise KeyboardInterrupt
+            key = kb.get_key()
+            if key == "\r":
+                print(f"\r\n  Episode {current_ep} ended.\r\n")
+                break
+            elif key == "\x03":
+                raise KeyboardInterrupt
 
-                # 1. Observation
-                obs = self.env.get_observation()
+            # 1. Observation
+            obs = self.env.get_observation()
 
-                # 2. Action from source
-                action = self.action_source()
+            # 2. Action from source
+            action = self.action_source()
 
-                # 3. Extract images (with resize)
-                for cam in _CAM_NAMES:
-                    color_key = f"{cam}_color"
-                    rgb = obs.get(color_key)
-                    if rgb is not None:
-                        rgb = cv2.resize(rgb, (self.image_w, self.image_h))
+            # 3. Extract images (with resize)
+            for cam in _CAM_NAMES:
+                color_key = f"{cam}_color"
+                rgb = obs.get(color_key)
+                if rgb is not None:
+                    rgb = cv2.resize(rgb, (self.image_w, self.image_h))
+                else:
+                    rgb = np.zeros((self.image_h, self.image_w, 3), dtype=np.uint8)
+
+                # Video frame: buffer in memory, write on confirm-save.
+                if cam in video_frames:
+                    video_frames[cam].append(rgb.copy())
+
+                # Store as (3, H, W) uint8
+                buffer[f"rgb_{cam}"].append(rgb.transpose(2, 0, 1)[None])
+
+                # Depth
+                if self._save_depth:
+                    depth_key = f"{cam}_aligned_depth_to_color"
+                    depth = obs.get(depth_key)
+                    if depth is not None:
+                        depth = cv2.resize(
+                            depth, (self.image_w, self.image_h),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
                     else:
-                        rgb = np.zeros((self.image_h, self.image_w, 3), dtype=np.uint8)
+                        depth = np.zeros((self.image_h, self.image_w), dtype=np.uint16)
+                    buffer[f"depth_{cam}"].append(depth[None, None])  # (1, 1, H, W)
 
-                    # Video frame
-                    if cam in video_writers:
-                        video_writers[cam].write(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+            # 4. Robot state
+            buffer["left_eef_pos"].append(
+                obs.get("left_eef_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
+            )
+            buffer["left_joint_pos"].append(
+                obs.get("left_joint_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
+            )
+            buffer["right_eef_pos"].append(
+                obs.get("right_eef_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
+            )
+            buffer["right_joint_pos"].append(
+                obs.get("right_joint_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
+            )
+            buffer["base_height"].append(
+                obs.get("base_height", np.zeros(1, dtype=np.float32)).astype(np.float32).reshape(1, 1)
+            )
 
-                    # Store as (3, H, W) uint8
-                    buffer[f"rgb_{cam}"].append(rgb.transpose(2, 0, 1)[None])
+            # 5. Actions (extract from action dict, default to zeros)
+            action_left = action.get("left") if action else None
+            action_right = action.get("right") if action else None
+            action_base = action.get("base") if action else None
+            action_lift = action.get("lift") if action else None
 
-                    # Depth
-                    if self._save_depth:
-                        depth_key = f"{cam}_aligned_depth_to_color"
-                        depth = obs.get(depth_key)
-                        if depth is not None:
-                            depth = cv2.resize(
-                                depth, (self.image_w, self.image_h),
-                                interpolation=cv2.INTER_NEAREST,
-                            )
-                        else:
-                            depth = np.zeros((self.image_h, self.image_w), dtype=np.uint16)
-                        buffer[f"depth_{cam}"].append(depth[None, None])  # (1, 1, H, W)
+            buffer["action_left"].append(
+                np.asarray(action_left if action_left is not None else np.zeros(7),
+                           dtype=np.float32).reshape(1, 7)
+            )
+            buffer["action_right"].append(
+                np.asarray(action_right if action_right is not None else np.zeros(7),
+                           dtype=np.float32).reshape(1, 7)
+            )
+            buffer["action_base"].append(
+                np.asarray(action_base if action_base is not None else np.zeros(3),
+                           dtype=np.float32).reshape(1, 3)
+            )
+            buffer["action_lift"].append(
+                np.array([[float(action_lift) if action_lift is not None else 0.0]],
+                         dtype=np.float32)
+            )
 
-                # 4. Robot state
-                buffer["left_eef_pos"].append(
-                    obs.get("left_eef_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
-                )
-                buffer["left_joint_pos"].append(
-                    obs.get("left_joint_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
-                )
-                buffer["right_eef_pos"].append(
-                    obs.get("right_eef_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
-                )
-                buffer["right_joint_pos"].append(
-                    obs.get("right_joint_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
-                )
-                buffer["base_height"].append(
-                    obs.get("base_height", np.zeros(1, dtype=np.float32)).astype(np.float32).reshape(1, 1)
-                )
+            # 6. Timestamp & episode
+            buffer["timestamp"].append(np.array([time.time()], dtype=np.float64))
+            buffer["episode"].append(np.array([current_ep], dtype=np.uint16))
 
-                # 5. Actions (extract from action dict, default to zeros)
-                action_left = action.get("left") if action else None
-                action_right = action.get("right") if action else None
-                action_base = action.get("base") if action else None
-                action_lift = action.get("lift") if action else None
+            steps += 1
 
-                buffer["action_left"].append(
-                    np.asarray(action_left if action_left is not None else np.zeros(7),
-                               dtype=np.float32).reshape(1, 7)
-                )
-                buffer["action_right"].append(
-                    np.asarray(action_right if action_right is not None else np.zeros(7),
-                               dtype=np.float32).reshape(1, 7)
-                )
-                buffer["action_base"].append(
-                    np.asarray(action_base if action_base is not None else np.zeros(3),
-                               dtype=np.float32).reshape(1, 3)
-                )
-                buffer["action_lift"].append(
-                    np.array([[float(action_lift) if action_lift is not None else 0.0]],
-                             dtype=np.float32)
+            # Print stats every 100 steps
+            if steps % 100 == 0:
+                elapsed = time.time() - t_start
+                fps = steps / elapsed if elapsed > 0 else 0
+                print(
+                    f"\r\n  Step {steps:5d} | FPS {fps:.1f} | "
+                    f"L_grip {obs.get('left_joint_pos', np.zeros(7))[6]:.2f} | "
+                    f"R_grip {obs.get('right_joint_pos', np.zeros(7))[6]:.2f}\r\n"
                 )
 
-                # 6. Timestamp & episode
-                buffer["timestamp"].append(np.array([time.time()], dtype=np.float64))
-                buffer["episode"].append(np.array([current_ep], dtype=np.uint16))
-
-                steps += 1
-
-                # Print stats every 100 steps
-                if steps % 100 == 0:
-                    elapsed = time.time() - t_start
-                    fps = steps / elapsed if elapsed > 0 else 0
-                    print(
-                        f"\r\n  Step {steps:5d} | FPS {fps:.1f} | "
-                        f"L_grip {obs.get('left_joint_pos', np.zeros(7))[6]:.2f} | "
-                        f"R_grip {obs.get('right_joint_pos', np.zeros(7))[6]:.2f}\r\n"
-                    )
-
-                # Hz limiting
-                elapsed_loop = time.monotonic() - t_loop
-                sleep_time = dt - elapsed_loop
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-
-        finally:
-            for vw in video_writers.values():
-                vw.release()
+            # Hz limiting
+            elapsed_loop = time.monotonic() - t_loop
+            sleep_time = dt - elapsed_loop
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
         # --- Save buffer ---
         if steps == 0:
             logger.warning("Episode %d: 0 steps, skipping save.", current_ep)
+            print(f"\r\n  Episode {current_ep}: 跳过 (0 steps)\r\n")
             return None
 
         duration = time.time() - t_start
         fps = steps / duration if duration > 0 else 0
 
+        print(
+            f"\r\n  Episode {current_ep} 录制完成: {steps} steps "
+            f"({duration:.1f}s, avg {fps:.1f} FPS)\r\n"
+            "  [S] 保存并落盘 | [D] 丢弃本段 | [Ctrl+C] 退出\r\n"
+        )
+
+        while True:
+            key = kb.get_key()
+            if key == "s":
+                break
+            if key == "d":
+                print(f"\r\n  Episode {current_ep} 已丢弃，不落盘。\r\n")
+                return None
+            if key == "\x03":
+                raise KeyboardInterrupt
+            time.sleep(0.05)
+
         logger.info("Episode %d: saving %d steps...", current_ep, steps)
         for key, val in buffer.items():
             data[key].append(np.concatenate(val, axis=0))
+
+        if self.save_video:
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            size = (self.image_w, self.image_h)
+            for cam, frames in video_frames.items():
+                video_path = f"{video_dir}/ep{current_ep}_{cam}.mp4"
+                vw = cv2.VideoWriter(video_path, fourcc, self.video_fps, size)
+                try:
+                    for frame_rgb in frames:
+                        vw.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+                finally:
+                    vw.release()
+            logger.info("Episode %d: video saved to %s/ep%d_*.mp4", current_ep, video_dir, current_ep)
 
         logger.info("Episode %d saved.", current_ep)
         return EpisodeStats(steps=steps, duration=duration, fps=fps)
