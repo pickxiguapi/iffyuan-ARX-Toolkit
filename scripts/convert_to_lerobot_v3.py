@@ -396,9 +396,10 @@ def convert(
         },
     }
 
+    image_feature_dtype = "video" if use_videos else "image"
     for cam in camera_names:
         features[f"observation.images.{cam}"] = {
-            "dtype": "image",
+            "dtype": image_feature_dtype,
             "shape": image_shape,
             "names": ["height", "width", "channel"],
         }
@@ -452,10 +453,14 @@ def convert(
                 "task": task_name,
             }
 
-            # Images: (C, H, W) → (H, W, C) → PIL
+            # Images: (C, H, W) → (H, W, C)
             for cam in camera_names:
-                img = Image.fromarray(cam_batches[cam][i].transpose(1, 2, 0))
-                frame[f"observation.images.{cam}"] = img
+                img_hwc = cam_batches[cam][i].transpose(1, 2, 0)
+                if use_videos:
+                    # LeRobot v3 视频编码路径使用 ndarray(H, W, C)
+                    frame[f"observation.images.{cam}"] = img_hwc
+                else:
+                    frame[f"observation.images.{cam}"] = Image.fromarray(img_hwc)
 
             dataset.add_frame(frame)
 
@@ -463,6 +468,12 @@ def convert(
 
     # --- Done ---
     elapsed = time.time() - t0
+    if use_videos:
+        # 清理中间图像目录，避免与 videos 重复占用空间。
+        image_dir = output_path / "images"
+        if image_dir.exists():
+            shutil.rmtree(image_dir, ignore_errors=True)
+
     print(f"\n{'=' * 60}")
     print(f"[DONE] 转换完成!")
     print(f"  输出: {output_path}")
