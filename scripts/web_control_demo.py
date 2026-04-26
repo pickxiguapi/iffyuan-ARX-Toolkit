@@ -866,11 +866,9 @@ def main():
                     for cam_key in ("camera_l_color", "camera_h_color", "camera_r_color"):
                         if cam_key in cam_obs:
                             rgb = np.asarray(cam_obs[cam_key])
-                            # obs 已经是 RGB, imencode 需要 BGR
-                            # 但 D405 经 passthrough 解码后 _decode 做了 [::-1]
-                            # 实测通道已反，这里不再转换，直接 encode
+                            frame_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
                             ok, jpeg = cv2.imencode(
-                                ".jpg", rgb, [cv2.IMWRITE_JPEG_QUALITY, 70]
+                                ".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 70]
                             )
                             if ok:
                                 # camera_l_color → camera_l

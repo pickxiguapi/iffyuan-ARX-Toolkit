@@ -36,3 +36,9 @@ install/
 *.mp4
 *.npy
 testdata/
+lerobot_datasets/
+datasets/
+
+# lerobot
+lerobot/
+

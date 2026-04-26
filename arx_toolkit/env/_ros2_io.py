@@ -221,8 +221,6 @@ class RobotIO(Node):
     def _decode(self, key: str, msg: Image, target_size) -> Optional[np.ndarray]:
         try:
             img = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-            if "depth" not in key:
-                img = img[:, :, ::-1]  # BGR -> RGB
             if target_size:
                 img = cv2.resize(img, target_size)
             return img
@@ -255,8 +253,9 @@ class RobotIO(Node):
                     if "depth" in key:
                         np.save(base_path + ".npy", img)
                     else:
+                        frame_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
                         cv2.imwrite(
-                            base_path + ".png", img,
+                            base_path + ".png", frame_bgr,
                             [cv2.IMWRITE_PNG_COMPRESSION, 0],
                         )
             except Exception as e:
@@ -266,7 +265,7 @@ class RobotIO(Node):
         self._release_video_writers()
 
     def _save_video_frame(self, save_dir: str, key: str, img: np.ndarray):
-        # Prepare frame: depth -> grayscale vis, ensure uint8 BGR
+        # Prepare frame: depth -> grayscale vis, color RGB -> BGR for OpenCV.
         frame = img
         if "depth" in key:
             depth_f = img.astype(np.float32)
@@ -280,6 +279,8 @@ class RobotIO(Node):
             frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         elif frame.ndim == 3 and frame.shape[2] == 1:
             frame = cv2.cvtColor(frame[:, :, 0], cv2.COLOR_GRAY2BGR)
+        elif "depth" not in key and frame.ndim == 3 and frame.shape[2] == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
         h, w = frame.shape[:2]
         writer_key = (save_dir, key)
