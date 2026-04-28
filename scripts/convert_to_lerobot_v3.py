@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 import time
@@ -56,6 +57,26 @@ def _is_numeric_array(key: str) -> bool:
         if key.startswith(prefix):
             return False
     return True
+
+
+def _read_meta_config(meta_group) -> dict:
+    """Read collection config saved by Collector."""
+    raw = meta_group.attrs.get("config")
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _get_action_mode(meta_group) -> str:
+    return str(_read_meta_config(meta_group).get("action_mode", "unknown"))
 
 
 # ---------------------------------------------------------------------------
@@ -309,10 +330,12 @@ def dry_run(zarr_path: str, max_episodes: int | None = None):
     ep_ranges = _get_episode_ranges(data, meta, max_episodes)
     n_eps = len(ep_ranges)
     n_frames = sum(end - start for start, end in ep_ranges)
+    action_mode = _get_action_mode(meta)
 
     numeric_arrays, camera_names = _discover_arrays(data)
 
     _print_header(zarr_path, n_eps, n_frames)
+    print(f"[INFO] Zarr action_mode = {action_mode}")
     _print_numeric_arrays(numeric_arrays)
     _print_cameras(camera_names, data)
 
@@ -361,6 +384,7 @@ def convert(
     ep_ranges = _get_episode_ranges(data, meta, max_episodes)
     n_eps = len(ep_ranges)
     n_frames = sum(end - start for start, end in ep_ranges)
+    action_mode = _get_action_mode(meta)
 
     # --- 计算维度 ---
     state_dim = _calc_dim(state_keys, data)
@@ -372,6 +396,7 @@ def convert(
     image_shape = (H, W, C)
     print(f"[INFO] 图像尺寸: {W}×{H}")
     print(f"[INFO] Episodes: {n_eps}, 总帧数: {n_frames}")
+    print(f"[INFO] Zarr action_mode = {action_mode}")
     print(f"[INFO] state = {state_dim}D ({' + '.join(state_keys)})")
     print(f"[INFO] action = {action_dim}D ({' + '.join(action_keys)})")
     print(f"[INFO] cameras = {', '.join(camera_names)}")
@@ -478,6 +503,7 @@ def convert(
     print(f"[DONE] 转换完成!")
     print(f"  输出: {output_path}")
     print(f"  Episodes: {n_eps}, Frames: {n_frames}")
+    print(f"  action_mode: {action_mode}")
     print(f"  state({state_dim}D) + action({action_dim}D) + {len(camera_names)} cameras")
     print(f"  耗时: {elapsed:.1f}s ({n_frames / max(elapsed, 0.1):.0f} frames/s)")
     print(f"{'=' * 60}")
@@ -546,6 +572,8 @@ def main():
     ep_ranges = _get_episode_ranges(data, meta, args.episodes)
     n_eps = len(ep_ranges)
     n_frames = sum(end - start for start, end in ep_ranges)
+    action_mode = _get_action_mode(meta)
+    print(f"[INFO] Zarr action_mode = {action_mode}")
 
     numeric_arrays, camera_names = _discover_arrays(data)
 

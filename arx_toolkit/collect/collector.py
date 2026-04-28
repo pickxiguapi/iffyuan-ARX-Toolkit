@@ -101,6 +101,8 @@ def _open_or_create_zarr(
         ds = zarr.open(dataset_path, mode="a")
         data = ds["data"]
         meta = ds["meta"]
+        if config:
+            meta.attrs["config"] = json.dumps(config, ensure_ascii=False, default=str)
         if "episode" in data:
             start_ep = len(np.unique(data["episode"][:]))
             logger.info("Found %d existing episodes", start_ep)
@@ -193,8 +195,8 @@ class Collector:
     Parameters
     ----------
     env : ARXEnv
-        Fully initialised environment (``action_mode="absolute_joint"``,
-        ``camera_type`` and ``camera_view`` set as needed).
+        Fully initialised environment with ``action_mode``, ``camera_type``
+        and ``camera_view`` set as needed.
     action_source : callable
         A function ``() -> dict`` that returns the current action.
         Expected format::
@@ -219,6 +221,8 @@ class Collector:
         Target (W, H) for saved images.
     task : str
         Task description string saved to metadata.
+    action_mode : str
+        Action semantics for ``action_left`` / ``action_right``.
     save_video : bool
         If True, save per-episode MP4 videos alongside the dataset.
     video_fps : float
@@ -235,6 +239,7 @@ class Collector:
         cam_mode: str = "rgbd",
         image_size: tuple[int, int] = (640, 480),
         task: str = "",
+        action_mode: str = "absolute_joint",
         save_video: bool = False,
         video_fps: float | None = None,
     ):
@@ -247,6 +252,7 @@ class Collector:
         self.cam_mode = cam_mode
         self.image_w, self.image_h = image_size
         self.task = task
+        self.action_mode = action_mode
         self.save_video = save_video
         self.video_fps = video_fps or hz
 
@@ -284,6 +290,7 @@ class Collector:
             "├──────────────────────────────────────────────────────┤",
             f"│  Dataset  : {self.dataset_path}",
             f"│  Task     : {self.task or '(未指定)'}",
+            f"│  Action   : {self.action_mode}",
             f"│  Cam mode : {self.cam_mode}    Image: {self.image_w}×{self.image_h}",
             f"│  Hz       : {self.hz}    Video: {'ON' if self.save_video else 'OFF'}",
             "├──────────────────────────────────────────────────────┤",
@@ -356,6 +363,7 @@ class Collector:
             "task": self.task,
             "hz": self.hz,
             "cam_mode": self.cam_mode,
+            "action_mode": self.action_mode,
             "image_size": [self.image_w, self.image_h],
             "num_episodes": self.num_episodes,
         }
