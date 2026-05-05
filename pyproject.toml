@@ -14,7 +14,6 @@ dependencies = [
     "zarr>=2.18,<3",
     "numcodecs",
     "scipy",
-    "websockets",
     "lerobot>=0.5.0",
     "Pillow",
 ]

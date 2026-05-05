@@ -6,9 +6,9 @@ ARX LIFT2 双臂移动操作机器人的模仿学习工具包。
 
 | 模块 | 状态 | 说明 |
 |------|:----:|------|
-| **Env** | ✅ | 统一 `step(action) → obs`，支持 3 种控制模式 |
-| **Teleop** | ✅ | 主从遥操作 + Quest 3 VR 双臂遥操作 |
-| **Collect** | ✅ | 定频采集 → Zarr → LeRobot v3 |
+| **Env** | ✅ | 统一 `step(action, action_mode=...) → obs`，支持 absolute_joint/absolute_eef/smooth_eef/delta_eef |
+| **Teleop** | ✅ | 主从遥操作 |
+| **Collect** | ✅ | 主从采集 → Zarr；VR SDK 采集 → Zarr |
 | **Deploy** | 🔲 | VLA 模型推理 + 真机部署（开发中） |
 
 ---
@@ -36,7 +36,7 @@ ARX LIFT2 双臂移动操作机器人的模仿学习工具包。
 | 双臂 | 6 DOF + 1 夹爪 ×2，左右对称 |
 | 底盘 | 3 全向轮，vx/vy ∈ [-1.5, 1.5]，vz ∈ [-2.0, 2.0] |
 | 升降台 | 高度 [0, 20]，行程 ~460 mm |
-| 夹爪 | 归一化 [0, 1]（0 = 全开，1 = 全闭），行程 44 mm |
+| 夹爪 | API 中统一归一化 [0, 1]；env 内部转换到底层 `[-3.4, 0]` |
 | 相机 ×3 | Intel RealSense D405 — camera_l / camera_h / camera_r |
 | 通信 | CANBus via SocketCAN，500 Hz |
 
@@ -44,11 +44,11 @@ ARX LIFT2 双臂移动操作机器人的模仿学习工具包。
 
 ## 环境设计 (ARXEnv)
 
-ARXEnv 是整个工具包的核心：一个 `step(action) → obs` 就能控制双臂 + 底盘 + 升降 + 相机的统一环境。遥操作、数据采集、模型部署全部基于这个接口，确保训练和部署时数据格式完全一致。
+ARXEnv 是整个工具包的核心：一个 `step(action, action_mode=...) → obs` 就能控制双臂 + 底盘 + 升降 + 相机的统一环境。遥操作、数据采集、模型部署全部基于这个接口，确保训练和部署时数据格式完全一致。
 
 ### 设计哲学
 
-> **One `step(action)` controls the entire robot.**
+> **One `step(action, action_mode=...)` controls the entire robot.**
 
 - 所有子系统（双臂、底盘、升降）通过一个 action dict 统一控制
 - 不想动的部分设为 `None`，不会发送任何指令
@@ -61,7 +61,6 @@ from arx_toolkit.env import ARXEnv
 import numpy as np
 
 env = ARXEnv(
-    action_mode="absolute_eef",      # delta_eef | absolute_eef | absolute_joint
     camera_type="rgbd",               # rgb | rgbd
     camera_view=("camera_l", "camera_h", "camera_r"),  # 订阅哪些相机
     img_size=(640, 480),              # (W, H)，None = 不缩放
@@ -70,7 +69,6 @@ env = ARXEnv(
 
 | 参数 | 可选值 | 说明 |
 |------|--------|------|
-| `action_mode` | `delta_eef` / `absolute_eef` / `absolute_joint` | 臂的控制模式 |
 | `camera_type` | `rgb` / `rgbd` | `rgb` 只订阅彩色；`rgbd` 额外订阅深度 |
 | `camera_view` | 任意子集 | 要用哪几个相机，如只用头部 `("camera_h",)` |
 | `img_size` | `(W, H)` 或 `None` | 输出图像尺寸 |
@@ -84,28 +82,31 @@ action = {
     "base":  np.ndarray(3,) | None,   # [vx, vy, vz] 底盘速度
     "lift":  float | None,            # 升降高度 [0, 20]
 }
-obs = env.step(action)
+obs = env.step(action, action_mode="absolute_joint")
 ```
 
 **4 个 key 都必须写**，不想动的设 `None`。
 
 #### 臂 Action — 7D
 
-语义取决于 `action_mode`：
+推荐用 `step(..., action_mode=...)` 显式指定本次臂控制方式：
 
-| action_mode | 7D 含义 | 适用场景 |
-|-------------|---------|---------|
-| `delta_eef` | `[dx, dy, dz, droll, dpitch, dyaw, gripper_delta]` | 遥操作增量控制 |
-| `absolute_eef` | `[x, y, z, roll, pitch, yaw, gripper]` | **VLA 推理首选** |
-| `absolute_joint` | `[j0, j1, j2, j3, j4, j5, gripper]` | 关节级控制，**VLA 推理首选** |
+| action_mode | 7D 含义 | 底层发送方式 |
+|-----------|---------|--------------|
+| `absolute_joint` | `[j0, j1, j2, j3, j4, j5, gripper]` | joint / mode=5 |
+| `absolute_eef` | `[x, y, z, roll, pitch, yaw, gripper]` | eef / mode=4 |
+| `smooth_eef` | `[x, y, z, roll, pitch, yaw, gripper]` | 平滑 EEF 序列 / mode=4 |
+| `delta_eef` | `[dx, dy, dz, droll, dpitch, dyaw, gripper_delta]` | 当前 EEF + delta 后发送 |
+
+`smooth_eef` 会在当前 EEF 到目标 EEF 之间按经验速度/加速度参数插值，适合需要比直接 `absolute_eef` 更柔和的移动。参数固定在函数内部，暂时不需要调整；使用时只需要传 `action_mode="smooth_eef"`。
 
 **单位约定：**
 
 - 位置 xyz：**米 (m)**，基坐标系
 - 姿态 rpy：**弧度 (rad)**
-- Gripper：归一化 **[0, 1]**，0 = 全开，1 = 全闭。支持连续值（如 0.5 = 半开）
-  - `delta_eef` 下 gripper 是增量，正值 = 更闭合
-  - 内部自动处理硬件值 `[-3.4, 0.0]` ↔ 归一化 `[0, 1]` 的转换
+- Gripper：统一归一化 **[0, 1]**，0 = 全开，1 = 全闭。
+  - `delta_eef` 下 gripper 是归一化增量，正值 = 更闭合
+  - env 内部自动处理底层硬件值 `[-3.4, 0.0]` ↔ 归一化 `[0, 1]` 的转换
 
 #### 底盘 Action — 3D 速度
 
@@ -129,6 +130,8 @@ obs = env.step(action)
 |-----|-------|-------|------|
 | `{side}_eef_pos` | (7,) | float32 | `[x, y, z, roll, pitch, yaw, gripper]` 末端位姿 |
 | `{side}_joint_pos` | (7,) | float32 | 6 个关节角 + gripper，gripper 归一化 [0,1] |
+| `{side}_joint_qvel` | (7,) | float32 | 6 个关节速度 + gripper 速度 |
+| `{side}_joint_effort` | (7,) | float32 | 6 个关节电流/力矩 + gripper effort |
 
 其中 `{side}` = `left` 或 `right`。
 
@@ -154,10 +157,14 @@ obs = {
     # ---- 左臂 ----
     "left_eef_pos":    np.float32(7,),   # [x, y, z, roll, pitch, yaw, gripper]
     "left_joint_pos":  np.float32(7,),   # [j0, j1, j2, j3, j4, j5, gripper]
+    "left_joint_qvel": np.float32(7,),   # [vj0, vj1, vj2, vj3, vj4, vj5, vgripper]
+    "left_joint_effort": np.float32(7,), # [effort0, ..., effort5, gripper_effort]
 
     # ---- 右臂 ----
     "right_eef_pos":   np.float32(7,),
     "right_joint_pos": np.float32(7,),
+    "right_joint_qvel": np.float32(7,),
+    "right_joint_effort": np.float32(7,),
 
     # ---- 底盘 / 升降 ----
     "base_height":     np.float32(1,),   # [height]
@@ -177,10 +184,10 @@ obs = {
 ### 生命周期
 
 ```python
-env = ARXEnv(action_mode="absolute_eef", camera_type="rgbd")
+env = ARXEnv(camera_type="rgbd")
 
 obs = env.reset()       # 双臂回零 + 夹爪关闭 + 升降归零 + 底盘停止
-obs = env.step(action)  # 发送指令，返回新 observation
+obs = env.step(action, action_mode="absolute_eef")  # 发送指令，返回新 observation
 
 env.close()             # 安全关闭（也通过 atexit 自动注册）
 ```
@@ -191,7 +198,7 @@ env.close()             # 安全关闭（也通过 atexit 自动注册）
 
 ### 便捷方法
 
-除了 `step(action)` 主接口外，还提供独立控制底盘/升降的便捷方法：
+除了 `step(action, action_mode=...)` 主接口外，还提供独立控制底盘/升降的便捷方法：
 
 ```python
 env.step_base(vx=0.5, vy=0, vz=0)      # 仅控制底盘
@@ -219,19 +226,19 @@ env.set_mode(3, side="right")  # 重力补偿 / 拖动示教 (gravity)
 **遥操作 + 数据采集：**
 
 ```python
-env = ARXEnv(action_mode="absolute_joint", camera_type="rgbd")
+env = ARXEnv(camera_type="rgbd")
 obs = env.reset()
 
 while collecting:
     action = teleop.read()    # 从遥操作设备读取 action
-    obs = env.step(action)    # 执行 + 获取观测
+    obs = env.step(action, action_mode="absolute_joint")  # 执行 + 获取观测
     recorder.push(obs, action)  # 存储
 ```
 
 **VLA 推理部署：**
 
 ```python
-env = ARXEnv(action_mode="delta_eef", camera_type="rgb")
+env = ARXEnv(camera_type="rgb")
 obs = env.reset()
 
 policy = load_vla_model("pi0.5.pt")
@@ -244,7 +251,7 @@ for step in range(max_steps):
         "right": action[7:14],
         "base":  action[14:17],
         "lift":  action[17],
-    })
+    }, action_mode="absolute_joint")
 ```
 
 > 详细实现见 `arx_toolkit/env/arx_env.py` 文件头。
@@ -331,7 +338,6 @@ from arx_toolkit.env import ARXEnv
 import numpy as np
 
 env = ARXEnv(
-    action_mode="absolute_eef",
     camera_type="rgbd",
     camera_view=("camera_h",),   # 只用头部相机
     img_size=(640, 480),
@@ -348,7 +354,7 @@ obs = env.step({
     "right": None,    # 不动右臂
     "base":  None,    # 不动底盘
     "lift":  None,    # 不动升降
-})
+}, action_mode="absolute_eef")
 
 env.close()
 ```
@@ -379,6 +385,7 @@ python scripts/teleop_leader_follower.py
 | `--rate` | `50` | 控制频率 Hz |
 | `--alpha` | `0.5` | 低通滤波 (0,1]，越小越平滑 |
 | `--deadband` | `0.004` | 死带阈值（rad），抑制微抖 |
+| `--action-mode` | `absolute_joint` | 主从输出动作模式 |
 
 **按键控制（单键触发，无需回车）：**
 
@@ -402,27 +409,26 @@ python scripts/teleop_leader_follower.py --alpha 0.3 --rate 30
 python scripts/teleop_leader_follower.py --alpha 1.0 --deadband 0.0
 ```
 
-### 方式 B：VR 遥操作（Quest 3）
+### 方式 B：VR 节点采集准备
 
-> 注意：已经完全接通，但是不够丝滑，单臂操作优先使用Leader-Follower。  
-
-Quest 3 头显双臂遥操作，左手柄控制左臂，右手柄控制右臂。
+VR 控制走底层 ROS2 VR SDK 节点，Toolkit 不再提供浏览器版 VR teleop。采集前先拉起硬件和 VR 节点：
 
 ```bash
-python scripts/teleop_vr.py
+bash scripts/collect_VR.sh
 ```
 
-Quest 3 浏览器打开 `https://<机器人IP>:8443` → 点击 "Start Controller Tracking" → 握住 grip 移动手柄 → 按 trigger 控制 gripper。
+然后另开终端运行 VR Zarr 采集：
 
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--https-port` | `8443` | HTTPS 端口 |
-| `--ws-port` | `8442` | WebSocket 端口 |
-| `--rate` | `20` | 控制频率 Hz |
-| `--scale` | `1.0` | 位移缩放 |
-| `--rot-scale` | `1.0` | 旋转缩放 |
+```bash
+python scripts/collect_vr.py \
+    --dataset datasets/take_part_bricks_vr.zarr \
+    --arm-mode dual \
+    --action-mode absolute_joint \
+    --cameras camera_h camera_l camera_r \
+    --task "take apart the building bricks"
+```
 
-> 首次运行自动生成自签名 SSL 证书，Quest 3 浏览器会提示不安全，点"继续"即可。
+VR 采集会保存为和主从一致的 Zarr schema，可直接用 `convert_to_lerobot_v3.py` 转换。
 
 ---
 
@@ -486,6 +492,7 @@ python scripts/collect_data.py \
 | `--control-rate` | `50` | Teleop 控制频率 Hz |
 | `--lowpass-alpha` | `0.5` | 低通滤波系数 |
 | `--deadband` | `0.004` | 死区阈值 |
+| `--action-mode` | `absolute_joint` | 主从采集动作模式 |
 
 ### Zarr 数据格式
 
@@ -496,8 +503,12 @@ dataset.zarr/
 │   ├── depth_camera_{l,h,r}   (N, 1, H, W) uint16      3 相机 深度 [rgbd 模式]
 │   ├── left_eef_pos           (N, 7) float32            state: 末端位姿 + gripper
 │   ├── left_joint_pos         (N, 7) float32            state: 6 关节 + gripper
+│   ├── left_joint_qvel        (N, 7) float32            state: 关节速度
+│   ├── left_joint_effort      (N, 7) float32            state: 关节电流/力矩
 │   ├── right_eef_pos          (N, 7) float32            state: 末端位姿 + gripper
 │   ├── right_joint_pos        (N, 7) float32            state: 6 关节 + gripper
+│   ├── right_joint_qvel       (N, 7) float32            state: 关节速度
+│   ├── right_joint_effort     (N, 7) float32            state: 关节电流/力矩
 │   ├── base_height            (N, 1) float32            升降高度
 │   ├── action_left            (N, 7) float32            动作: 6 joint + gripper
 │   ├── action_right           (N, 7) float32            动作: 6 joint + gripper
@@ -627,20 +638,31 @@ python scripts/convert_to_lerobot_v3.py ... --episodes 10
 ```python
 from arx_toolkit.teleop import LeaderFollowerTeleop
 
-teleop = LeaderFollowerTeleop(env, leader_side="left", control_rate=50)
+teleop = LeaderFollowerTeleop(
+    env,
+    leader_side="left",
+    control_rate=50,
+    action_mode="absolute_joint",
+)
 teleop.start()                   # 后台控制线程
 cmd = teleop.last_command        # 最新 action dict（供 Collector 读取）
 teleop.stop()                    # 停止
 teleop.run_interactive()         # 或：交互式运行（阻塞）
 ```
 
-### VRTeleop
+### VR Zarr Collection
 
 ```python
-from arx_toolkit.teleop import VRTeleop
+from arx_toolkit.collect import collect_vr_episode
 
-vr = VRTeleop(env, https_port=8443, ws_port=8442, control_rate=20)
-vr.run()  # 阻塞： HTTPS + WebSocket + 控制循环
+collect_vr_episode(
+    env,
+    arm_mode="dual",
+    dataset_path="datasets/vr.zarr",
+    frame_rate=20.0,
+    action_mode="absolute_joint",
+    camera_names=("camera_h", "camera_l", "camera_r"),
+)
 ```
 
 ### Collector
@@ -674,19 +696,19 @@ iffyuan-ARX-Toolkit/
 │   │   ├── arx_env.py            # ARXEnv 主类
 │   │   └── _ros2_io.py           # ROS2 通信层
 │   ├── teleop/
-│   │   ├── leader_follower.py    # 主从遥操作
-│   │   ├── vr_teleop.py          # VR 双臂遥操作
-│   │   └── vr_web_ui/            # WebXR 前端
+│   │   └── leader_follower.py    # 主从遥操作
 │   ├── collect/
-│   │   └── collector.py          # Collector
+│   │   ├── collector.py          # Zarr Collector
+│   │   └── vr_collector.py       # VR Zarr 采集
 │   └── utils/
 │       ├── logger.py
 │       └── transforms.py
 ├── scripts/
 │   ├── collect_data.py           # 数据采集 CLI
+│   ├── collect_vr.py             # VR Zarr 采集
+│   ├── collect_VR.sh             # VR 硬件节点启动
 │   ├── convert_to_lerobot_v3.py  # Zarr → LeRobot v3
 │   ├── teleop_leader_follower.py # 主从遥操作
-│   ├── teleop_vr.py              # VR 遥操作
 │   ├── web_control_demo.py       # Web 键盘控制 Demo
 │   └── mini_env_example.py       # 最小环境示例
 ├── ros_scripts/
@@ -705,7 +727,7 @@ iffyuan-ARX-Toolkit/
 | [0. 硬件参数手册](docs/0.硬件参数手册.md) | LIFT2 完整硬件规格 |
 | [1. 启动和测试环境](docs/1.启动和测试环境.md) | ROS2 节点启动 + Env 验证 + 常见问题 |
 | [2-1. 主从遥操作](docs/2-1.主从遥操作.md) | Leader-follower 调参与技术细节 |
-| [2-2. VR 遥操作](docs/2-2.VR遥操作.md) | Quest 3 配置与坐标校准 |
+| [2-2. VR 采集](docs/2-2.VR遥操作.md) | ROS2 VR SDK 节点启动与 Zarr 采集 |
 | [3. 数据采集](docs/3.数据采集.md) | 完整采集流程 + LeRobot 转换 |
 | [4. Web 键盘控制](docs/4.Web键盘控制.md) | 浏览器内键盘遥操作 + Mock 调试 |
 
