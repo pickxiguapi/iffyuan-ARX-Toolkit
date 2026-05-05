@@ -1,6 +1,6 @@
 """Unified ARX LIFT2 robot environment.
 
-Design philosophy: one ``step(action)`` controls the entire robot.
+Design philosophy: one ``step(action, action_mode=...)`` controls the entire robot.
 
 Robot
 -----
@@ -10,8 +10,8 @@ ARX LIFT2 dual-arm mobile manipulator:
 - Lift (vertical linear stage)
 - Up to 3 RealSense D405 cameras
 
-Action — ``step(action) -> obs``
---------------------------------
+Action — ``step(action, action_mode=...) -> obs``
+-------------------------------------------------
 ``action`` is a dict with **4 required keys** (set value to ``None`` to skip):
 
 .. code-block:: python
@@ -23,23 +23,26 @@ Action — ``step(action) -> obs``
         "lift":  float | None,
     }
 
-**Arm action (left / right)** — 7D, semantics depend on ``action_mode``:
+**Arm action (left / right)** — 7D. ``step(..., action_mode=...)`` selects the
+control path explicitly:
 
 +-----------------+-------+--------------------------------------------------+
 | action_mode     | dim   | meaning                                          |
 +=================+=======+==================================================+
-| delta_eef       | 7     | [dx, dy, dz, droll, dpitch, dyaw, gripper]     |
+| absolute_joint  | 7     | [j0, j1, j2, j3, j4, j5, gripper]              |
 +-----------------+-------+--------------------------------------------------+
-| absolute_eef    | 7     | [x, y, z, roll, pitch, yaw, gripper]             |
+| absolute_eef    | 7     | [x, y, z, roll, pitch, yaw, gripper]            |
 +-----------------+-------+--------------------------------------------------+
-| absolute_joint  | 7     | [j0, j1, j2, j3, j4, j5, gripper]               |
+| smooth_eef      | 7     | EEF target, sent through smooth sequence         |
++-----------------+-------+--------------------------------------------------+
+| delta_eef       | 7     | [dx, dy, dz, droll, dpitch, dyaw, dg]           |
 +-----------------+-------+--------------------------------------------------+
 
 - Position xyz: meters, in base frame.
 - Orientation rpy: radians.
-- Gripper: normalized [0, 1]. 0 = fully open, 1 = fully closed.
-  Supports continuous values (e.g. 0.5 = half open).
-  For delta_eef, gripper delta is also in [0, 1] space (positive = more closed).
+- Gripper uses normalized [0, 1] at the ARXEnv API.
+  0 = fully open, 1 = fully closed. ARXEnv converts to hardware raw values
+  before publishing commands.
 
 **Base action** — 3D velocity command:
 
@@ -57,8 +60,8 @@ Action — ``step(action) -> obs``
 
 - height ∈ [0, 20], where 0 = lowest, 20 = highest.
 
-Observation — ``obs = env.reset()`` / ``env.step(action)``
-----------------------------------------------------------
+Observation — ``obs = env.reset()`` / ``env.step(action, action_mode=...)``
+---------------------------------------------------------------------------
 ``obs`` is a flat dict. Available keys depend on ``camera_type`` and
 ``camera_view``:
 
@@ -70,6 +73,10 @@ Observation — ``obs = env.reset()`` / ``env.step(action)``
 | {side}_eef_pos      | (7,)     | [x, y, z, roll, pitch, yaw, gripper] end-eff  |
 +---------------------+----------+----------------------------------------------+
 | {side}_joint_pos    | (7,)     | 6 joint angles + gripper [0,1] normalized     |
++---------------------+----------+----------------------------------------------+
+| {side}_joint_qvel   | (7,)     | 6 joint velocities + gripper velocity         |
++---------------------+----------+----------------------------------------------+
+| {side}_joint_effort | (7,)     | 6 joint currents/efforts + gripper effort     |
 +---------------------+----------+----------------------------------------------+
 
 where ``{side}`` is ``left`` or ``right``.
@@ -99,13 +106,13 @@ Lifecycle
 ---------
 .. code-block:: python
 
-    env = ARXEnv(action_mode="absolute_eef", camera_type="rgbd")
+    env = ARXEnv(camera_type="rgbd")
     obs = env.reset()       # home arms, lift=0, base stop
-    obs = env.step(action)  # send command, return new obs
+    obs = env.step(action, action_mode="absolute_eef")
     env.close()             # safe shutdown (also registered via atexit)
 
 Convenience methods ``step_base()``, ``step_lift()``, ``step_base_lift()``
-are available but the primary interface is ``step(action)``.
+are available but the primary interface is ``step(action, action_mode=...)``.
 """
 
 from __future__ import annotations
@@ -117,6 +124,7 @@ from typing import Dict, Iterable, Literal, Optional, Tuple
 import numpy as np
 
 from arx_toolkit.utils.logger import get_logger
+from arx_toolkit.utils.smooth import plan_smooth_eef_sequences
 from arx_toolkit.utils.transforms import (
     quat_from_rpy,
     quat_multiply,
@@ -129,18 +137,23 @@ logger = get_logger("arx_toolkit.env")
 # Types
 # ---------------------------------------------------------------------------
 
-ActionMode = Literal["delta_eef", "absolute_eef", "absolute_joint"]
+ActionMode = Literal["absolute_joint", "absolute_eef", "smooth_eef", "delta_eef"]
 Side = Literal["left", "right", "both"]
 
-_VALID_ACTION_MODES: set[str] = {"delta_eef", "absolute_eef", "absolute_joint"}
+_VALID_ACTION_MODES: set[str] = {
+    "absolute_joint",
+    "absolute_eef",
+    "smooth_eef",
+    "delta_eef",
+}
 
 # RobotCmd mode constants (from ARX firmware)
 _MODE_EEF = 4
 _MODE_JOINT = 5
 
-# Gripper: hardware range is [-3.4, 0.0], we normalize to [0, 1]
-#   0.0 = fully open,  1.0 = fully closed
-#   hardware: -3.4 = open, 0.0 = closed
+# Gripper: public API is normalized [0, 1], firmware uses [-3.4, 0.0].
+#   public 0.0 = fully open,  1.0 = fully closed
+#   raw   -3.4 = fully open,  0.0 = fully closed
 GRIPPER_OPEN_RAW = -3.4
 GRIPPER_CLOSE_RAW = 0.0
 
@@ -166,10 +179,6 @@ class ARXEnv:
 
     Parameters
     ----------
-    action_mode : ActionMode
-        ``"delta_eef"``  — 7D delta [dx,dy,dz,dr,dp,dy, gripper]
-        ``"absolute_eef"``  — 7D absolute [x,y,z,r,p,y, gripper]
-        ``"absolute_joint"``  — 7D absolute [j0..j5, gripper]
     camera_type : ``"rgb"`` or ``"rgbd"``
         ``"rgb"`` subscribes color only; ``"rgbd"`` subscribes color + depth.
     camera_view : Iterable[str]
@@ -180,22 +189,15 @@ class ARXEnv:
 
     def __init__(
         self,
-        action_mode: ActionMode = "delta_eef",
         camera_type: Literal["rgb", "rgbd"] = "rgbd",
         camera_view: Iterable[str] = ("camera_l", "camera_h", "camera_r"),
         img_size: Optional[Tuple[int, int]] = (640, 480),
     ):
-        if action_mode not in _VALID_ACTION_MODES:
-            raise ValueError(
-                f"Invalid action_mode={action_mode!r}. "
-                f"Choose from {_VALID_ACTION_MODES}"
-            )
         if camera_type not in ("rgb", "rgbd"):
             raise ValueError(
                 f"Invalid camera_type={camera_type!r}. Choose 'rgb' or 'rgbd'"
             )
 
-        self.action_mode: ActionMode = action_mode
         self.camera_type = camera_type
         self.camera_view = list(camera_view)
         self.img_size = img_size
@@ -285,7 +287,7 @@ class ARXEnv:
         return ok
 
     def _apply_absolute_eef(self, action: Dict[str, np.ndarray]):
-        """Send absolute EEF targets (mode=4). Gripper is normalized [0,1]."""
+        """Send EEF targets (mode=4). Gripper is normalized [0,1]."""
         for side, target in action.items():
             self._send_arm_cmd(
                 side, _MODE_EEF,
@@ -294,7 +296,7 @@ class ARXEnv:
             )
 
     def _apply_absolute_joint(self, action: Dict[str, np.ndarray]):
-        """Send absolute joint targets (mode=5). Gripper is normalized [0,1]."""
+        """Send joint targets (mode=5). Gripper is normalized [0,1]."""
         for side, target in action.items():
             self._send_arm_cmd(
                 side, _MODE_JOINT,
@@ -302,41 +304,71 @@ class ARXEnv:
                 gripper=gripper_denormalize(target[6]),
             )
 
+    @staticmethod
+    def _raw_arm_state(status_all: dict, side: str) -> tuple[np.ndarray, np.ndarray]:
+        """Return raw [x,y,z,r,p,y,gripper] EEF and joint state for one arm."""
+        status = status_all.get(side) if isinstance(status_all, dict) else None
+        if status is None:
+            raise RuntimeError(f"{side}: current status unavailable")
+        end_pos = np.asarray(status.end_pos, dtype=np.float32).reshape(-1)
+        joint_pos = np.asarray(status.joint_pos, dtype=np.float32).reshape(-1)
+        if end_pos.shape[0] < 6 or joint_pos.shape[0] < 7:
+            raise RuntimeError(f"{side}: malformed current status")
+        eef = np.concatenate([end_pos[:6], joint_pos[6:7]]).astype(np.float32)
+        return eef, joint_pos[:7].astype(np.float32)
+
+    def _apply_smooth_eef(self, action: Dict[str, np.ndarray]):
+        """Send EEF targets through a smoothed command sequence."""
+        duration_per_step = 1.0 / 20.0
+        status_all = self.node.get_robot_status()
+        start_eef = {
+            side: self._raw_arm_state(status_all, side)[0]
+            for side in action
+        }
+        sequences = plan_smooth_eef_sequences(
+            action=action,
+            start_eef=start_eef,
+            normalize_gripper=gripper_normalize,
+        )
+        max_len = max((len(seq) for seq in sequences.values()), default=0)
+        for idx in range(max_len):
+            t0 = time.time()
+            for side, seq in sequences.items():
+                if idx < len(seq):
+                    target = seq[idx]
+                    self._send_arm_cmd(
+                        side, _MODE_EEF,
+                        end_pos=[float(x) for x in target[:6]],
+                        gripper=gripper_denormalize(target[6]),
+                    )
+            sleep_need = duration_per_step - (time.time() - t0)
+            if sleep_need > 0.0:
+                time.sleep(sleep_need)
+
     def _apply_delta_eef(self, action: Dict[str, np.ndarray]):
-        """Compute absolute targets from deltas, then send (mode=4).
+        """Compute absolute EEF targets from deltas, then send them.
 
-        Gripper delta is in normalized space [0,1]: positive = more closed.
+        Pose deltas are in hardware EEF units. Gripper delta is in normalized
+        [0,1] space, positive means more closed.
         """
-        obs = self.get_observation(include_camera=False, include_base=False)
+        status_all = self.node.get_robot_status()
+        target_action: Dict[str, np.ndarray] = {}
         for side, delta in action.items():
-            curr_end = obs.get(f"{side}_eef_pos")
-            curr_joint = obs.get(f"{side}_joint_pos")
-            if curr_end is None or curr_joint is None:
-                raise RuntimeError(f"{side}: current state unavailable for delta_eef")
-
-            curr_end = np.asarray(curr_end, dtype=np.float32).reshape(-1)
-            curr_joint = np.asarray(curr_joint, dtype=np.float32).reshape(-1)
-
-            # Position: simple add
-            target_xyz = curr_end[:3] + delta[:3]
-
-            # Orientation: quaternion multiply (base-frame delta)
-            q_curr = quat_from_rpy(curr_end[3:6])
+            curr_eef, _curr_joint = self._raw_arm_state(status_all, side)
+            target_xyz = curr_eef[:3] + delta[:3]
+            q_curr = quat_from_rpy(curr_eef[3:6])
             q_delta = quat_from_rpy(delta[3:6])
             q_target = quat_multiply(q_delta, q_curr)
             target_rpy = rpy_from_quat(q_target)
-
-            # Gripper: obs joint_pos[6] is already normalized [0,1], just add delta
-            curr_gripper_normalized = float(curr_joint[6])
-            target_gripper_normalized = np.clip(
-                curr_gripper_normalized + float(delta[6]), 0.0, 1.0,
-            )
-
-            self._send_arm_cmd(
-                side, _MODE_EEF,
-                end_pos=[float(x) for x in np.concatenate([target_xyz, target_rpy])],
-                gripper=gripper_denormalize(target_gripper_normalized),
-            )
+            target_gripper = float(np.clip(
+                gripper_normalize(float(curr_eef[6])) + float(delta[6]),
+                0.0,
+                1.0,
+            ))
+            target_action[side] = np.concatenate([
+                target_xyz, target_rpy, [target_gripper],
+            ]).astype(np.float32)
+        self._apply_absolute_eef(target_action)
 
     # ------------------------------------------------------------------
     # Internal: validate action dict
@@ -402,6 +434,17 @@ class ARXEnv:
 
         return result
 
+    @staticmethod
+    def _normalize_action_mode(action_mode: str) -> ActionMode:
+        """Validate the public action mode."""
+        normalized = str(action_mode).strip().lower()
+        if normalized not in _VALID_ACTION_MODES:
+            raise ValueError(
+                "Invalid action_mode="
+                f"{action_mode!r}. Choose from {_VALID_ACTION_MODES}"
+            )
+        return normalized  # type: ignore[return-value]
+
     # ------------------------------------------------------------------
     # Public API — Observation
     # ------------------------------------------------------------------
@@ -433,10 +476,14 @@ class ARXEnv:
                                                          #  gripper normalized [0,1] (0=open, 1=closed)
                     "left_joint_pos":  np.float32(7,),   # [j0, j1, j2, j3, j4, j5, gripper]
                                                          #  gripper normalized [0,1] (0=open, 1=closed)
+                    "left_joint_qvel": np.float32(7,),   # joint velocity
+                    "left_joint_effort": np.float32(7,), # joint current / effort
 
                     # ---- Right arm ----
                     "right_eef_pos":   np.float32(7,),
                     "right_joint_pos": np.float32(7,),
+                    "right_joint_qvel": np.float32(7,),
+                    "right_joint_effort": np.float32(7,),
 
                     # ---- Base / Lift ----
                     "base_height":     np.float32(1,),   # lift height [0, 20]
@@ -494,7 +541,9 @@ class ARXEnv:
     def step(
         self,
         action: dict,
-    ) -> Dict[str, np.ndarray]:
+        action_mode: ActionMode | str,
+        return_observation: bool = True,
+    ) -> Dict[str, np.ndarray] | None:
         """Execute one control step for the whole robot.
 
         Args:
@@ -507,17 +556,29 @@ class ARXEnv:
                     "lift":  float | None,            # height 0~20
                 }
 
-                Arm action semantics depend on ``action_mode``:
-                - ``"delta_eef"``: [dx, dy, dz, dr, dp, dy, gripper]
-                - ``"absolute_eef"``: [x, y, z, r, p, y, gripper]
-                - ``"absolute_joint"``: [j0, j1, j2, j3, j4, j5, gripper]
+                Arm action semantics are selected by ``action_mode``:
+                - ``"absolute_joint"``: joint target [j0, j1, j2, j3, j4, j5, gripper]
+                - ``"absolute_eef"``: EEF target [x, y, z, r, p, y, gripper]
+                - ``"smooth_eef"``: EEF target, sent through a smoothed sequence
+                - ``"delta_eef"``: EEF delta [dx, dy, dz, dr, dp, dy, gripper_delta]
+
+                Gripper is always normalized [0,1] at this API. ARXEnv
+                converts it to firmware raw [-3.4,0] before publishing.
 
                 ``None`` = don't move that part.
+            action_mode: Per-call arm control mode. Accepts
+                ``"absolute_joint"``, ``"absolute_eef"``, ``"smooth_eef"``,
+                or ``"delta_eef"``.
+            return_observation: If True, fetch and return a fresh observation
+                after publishing commands. Set False for high-rate teleop loops
+                that only need to send commands.
 
         Returns:
-            Observation dict after commands are sent.
+            Observation dict after commands are sent, or ``None`` when
+            ``return_observation=False``.
         """
         action = self._validate_action(action)
+        action_mode = self._normalize_action_mode(action_mode)
 
         # -- Arms --
         arm_action = {}
@@ -526,12 +587,14 @@ class ARXEnv:
                 arm_action[side] = action[side]
 
         if arm_action:
-            if self.action_mode == "delta_eef":
-                self._apply_delta_eef(arm_action)
-            elif self.action_mode == "absolute_eef":
-                self._apply_absolute_eef(arm_action)
-            elif self.action_mode == "absolute_joint":
+            if action_mode == "absolute_joint":
                 self._apply_absolute_joint(arm_action)
+            elif action_mode == "absolute_eef":
+                self._apply_absolute_eef(arm_action)
+            elif action_mode == "smooth_eef":
+                self._apply_smooth_eef(arm_action)
+            elif action_mode == "delta_eef":
+                self._apply_delta_eef(arm_action)
 
         # -- Base & Lift --
         base_val = action["base"]
@@ -541,6 +604,8 @@ class ARXEnv:
             vx, vy, vz = (float(base_val[0]), float(base_val[1]), float(base_val[2])) if base_val is not None else (0.0, 0.0, 0.0)
             self.step_base_lift(vx=vx, vy=vy, vz=vz, height=lift_val)
 
+        if not return_observation:
+            return None
         return self.get_observation()
 
     # ------------------------------------------------------------------
@@ -719,7 +784,6 @@ if __name__ == "__main__":
     import time as _time
 
     env = ARXEnv(
-        action_mode="absolute_eef",
         camera_type="rgbd",
         camera_view=("camera_h",),
         img_size=(640, 480),
@@ -735,14 +799,14 @@ if __name__ == "__main__":
     print("  camera_h_color shape:", obs["camera_h_color"].shape)
     _time.sleep(3.0)
 
-    # ========== 2. step — 双臂 absolute_eef ==========
+    # ========== 2. step — 双臂 eef ==========
     obs = env.step({
         "left":  np.array([0.02, 0, 0.03, 0, 0, 0, 0.0], dtype=np.float32),
         "right": np.array([0.02, 0, 0.03, 0, 0, 0, 0.0], dtype=np.float32),
         "base": None,
         "lift": None,
-    })
-    print("\n[step] 双臂 absolute_eef (gripper=0 全开)")
+    }, action_mode="absolute_eef")
+    print("\n[step] 双臂 eef (gripper=0 全开)")
     print("  left_eef_pos:", obs["left_eef_pos"])
     _time.sleep(3.0)
 
@@ -752,7 +816,7 @@ if __name__ == "__main__":
         "right": None,
         "base": None,
         "lift": None,
-    })
+    }, action_mode="absolute_eef")
     print("\n[step] 单臂左 (gripper=0.5 半闭合)")
     print("  left gripper:", obs["left_joint_pos"][6])
     _time.sleep(3.0)
@@ -763,7 +827,7 @@ if __name__ == "__main__":
         "right": None,
         "base": None,
         "lift": None,
-    })
+    }, action_mode="absolute_eef")
     print("\n[step] gripper=1.0 全闭")
     print("  left gripper:", obs["left_joint_pos"][6])
     _time.sleep(3.0)
@@ -795,7 +859,7 @@ if __name__ == "__main__":
         "right": None,
         "base": np.array([0.0, 0.1, 0.0], dtype=np.float32),
         "lift": 1.0,
-    })
+    }, action_mode="absolute_joint")
     _time.sleep(1.0)
     env.step_base(0, 0, 0)  # 停底盘
     print("\n[step] 底盘横移 + 升降到 1")
@@ -805,7 +869,7 @@ if __name__ == "__main__":
     # ========== 9. step — 全部 None (纯取观测) ==========
     obs = env.step({
         "left": None, "right": None, "base": None, "lift": None,
-    })
+    }, action_mode="absolute_joint")
     print("\n[step] 全 None (纯观测)")
     print("  obs keys:", sorted(obs.keys()))
     _time.sleep(3.0)

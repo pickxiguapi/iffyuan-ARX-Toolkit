@@ -59,7 +59,7 @@ class MockARXEnv:
         self._base_height = 0.0
         return self._obs()
 
-    def step(self, action: dict):
+    def step(self, action: dict, action_mode: str):
         left_a = action.get("left")
         right_a = action.get("right")
         base_a = action.get("base")
@@ -160,7 +160,7 @@ def handle_key(key: str) -> dict:
         if key in arm_map:
             action = {"left": None, "right": None, "base": None, "lift": None}
             action[active_side] = arm_map[key]
-            obs = env.step(action)
+            obs = env.step(action, action_mode="delta_eef")
             return _status("ok", f"{active_side[0].upper()} {key}")
 
         # --- 夹爪切换 ---
@@ -172,7 +172,7 @@ def handle_key(key: str) -> dict:
             action = {"left": None, "right": None, "base": None, "lift": None}
             grip_cmd = np.array([0, 0, 0, 0, 0, 0, target_delta])
             action[active_side] = grip_cmd
-            obs = env.step(action)
+            obs = env.step(action, action_mode="delta_eef")
             return _status("ok", f"{active_side[0].upper()} 夹爪{'关闭' if curr_g < 0.5 else '打开'}")
 
         # --- 底盘控制 ---
@@ -186,19 +186,36 @@ def handle_key(key: str) -> dict:
             ".":          np.array([0, 0, -base_step]),
         }
         if key in base_map:
-            obs = env.step({"left": None, "right": None, "base": base_map[key], "lift": None})
+            obs = env.step(
+                {"left": None, "right": None, "base": base_map[key], "lift": None},
+                action_mode="delta_eef",
+            )
             return _status("ok", f"底盘 {key}")
         if key == "base_stop":
-            obs = env.step({"left": None, "right": None, "base": np.array([0, 0, 0]), "lift": None})
+            obs = env.step(
+                {
+                    "left": None,
+                    "right": None,
+                    "base": np.array([0, 0, 0]),
+                    "lift": None,
+                },
+                action_mode="delta_eef",
+            )
             return _status("ok", "底盘停")
 
         # --- 升降控制 ---
         lift_step = sp["lift"]
         if key == "=":
-            obs = env.step({"left": None, "right": None, "base": None, "lift": lift_step})
+            obs = env.step(
+                {"left": None, "right": None, "base": None, "lift": lift_step},
+                action_mode="delta_eef",
+            )
             return _status("ok", "升降 ↑")
         if key == "-":
-            obs = env.step({"left": None, "right": None, "base": None, "lift": -lift_step})
+            obs = env.step(
+                {"left": None, "right": None, "base": None, "lift": -lift_step},
+                action_mode="delta_eef",
+            )
             return _status("ok", "升降 ↓")
 
         # --- 切换控制臂 ---
@@ -226,7 +243,15 @@ def handle_key(key: str) -> dict:
 
         # --- 急停 ---
         if key == "escape":
-            obs = env.step({"left": None, "right": None, "base": np.array([0, 0, 0]), "lift": None})
+            obs = env.step(
+                {
+                    "left": None,
+                    "right": None,
+                    "base": np.array([0, 0, 0]),
+                    "lift": None,
+                },
+                action_mode="delta_eef",
+            )
             return _status("warn", "急停!")
 
     return _status("ignore", "")
@@ -839,7 +864,6 @@ def main():
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from arx_toolkit.env import ARXEnv
         env = ARXEnv(
-            action_mode="delta_eef",
             camera_type="rgb",
             camera_view=("camera_l", "camera_h", "camera_r"),
             img_size=(640, 480),

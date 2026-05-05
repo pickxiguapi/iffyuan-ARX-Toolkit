@@ -10,8 +10,7 @@ Usage::
     from arx_toolkit.env import ARXEnv
     from arx_toolkit.teleop import LeaderFollowerTeleop
 
-    env = ARXEnv(action_mode="absolute_joint", camera_type="rgb",
-                 camera_view=())
+    env = ARXEnv(camera_type="rgb", camera_view=())
     teleop = LeaderFollowerTeleop(env, leader_side="left")
     teleop.run_interactive()   # blocks until Enter
     env.close()
@@ -107,6 +106,9 @@ class LeaderFollowerTeleop:
         Low-pass coefficient in (0, 1]. 1.0 = no filtering.
     deadband : float
         Dead-band threshold (rad / normalised gripper units).
+    action_mode : str
+        ARXEnv action mode represented by ``last_command``. Leader-follower
+        currently produces joint-space commands only.
     """
 
     def __init__(
@@ -116,9 +118,14 @@ class LeaderFollowerTeleop:
         control_rate: float = 50.0,
         lowpass_alpha: float = 0.5,
         deadband: float = 0.004,
+        action_mode: str = "absolute_joint",
     ):
         if leader_side not in ("left", "right"):
             raise ValueError(f"leader_side must be 'left' or 'right', got {leader_side!r}")
+        if action_mode != "absolute_joint":
+            raise ValueError(
+                "LeaderFollowerTeleop only supports action_mode='absolute_joint'"
+            )
 
         self.env = env
         self.leader_side = leader_side
@@ -126,6 +133,7 @@ class LeaderFollowerTeleop:
         self.control_rate = control_rate
         self.lowpass_alpha = lowpass_alpha
         self.deadband = deadband
+        self.action_mode = action_mode
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -140,7 +148,8 @@ class LeaderFollowerTeleop:
     def last_command(self) -> Optional[dict]:
         """Last action dict sent to the follower (for Collector to read).
 
-        Returns a dict in the same format as ``ARXEnv.step(action)``::
+        Returns a dict in the same format as
+        ``ARXEnv.step(action, action_mode="absolute_joint")``::
 
             {
                 "left":  np.ndarray(7,) | None,
@@ -175,8 +184,8 @@ class LeaderFollowerTeleop:
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         logger.info(
-            "Teleop started: %s (leader/gravity) → %s (follower)",
-            self.leader_side, self.follower_side,
+            "Teleop started: %s (leader/gravity) → %s (follower), action_mode=%s",
+            self.leader_side, self.follower_side, self.action_mode,
         )
 
     def stop(self) -> None:
@@ -240,13 +249,13 @@ class LeaderFollowerTeleop:
     # ------------------------------------------------------------------
 
     def _wait_for_ros2_ready(self, timeout: float = 10.0) -> None:
-        """Block until arm command publishers have ≥1 subscriber.
+        """Block until arm command publishers have at least one subscriber.
 
         On first launch, ROS2 publishers/subscribers need time to discover
-        each other (DDS discovery).  Without this wait, ``set_mode(3)``
-        silently fails because the arm driver hasn't subscribed yet.
+        each other (DDS discovery). Without this wait, ``set_mode(3)``
+        silently fails because the arm driver has not subscribed yet.
         """
-        logger.info("Waiting for ROS2 subscribers on arm_cmd topics …")
+        logger.info("Waiting for ROS2 subscribers on arm_cmd topics ...")
         node = self.env.node
         t0 = time.monotonic()
         while time.monotonic() - t0 < timeout:
@@ -254,7 +263,7 @@ class LeaderFollowerTeleop:
             right_subs = node.cmd_pub_r.get_subscription_count()
             if left_subs >= 1 and right_subs >= 1:
                 logger.info(
-                    "ROS2 ready — subscribers: left=%d, right=%d (%.1fs)",
+                    "ROS2 ready - subscribers: left=%d, right=%d (%.1fs)",
                     left_subs, right_subs, time.monotonic() - t0,
                 )
                 return
@@ -298,14 +307,21 @@ class LeaderFollowerTeleop:
         else:
             cmd = filtered
 
-        # Send to follower via the env internal method (bypasses validate + obs)
-        self.env._apply_absolute_joint({self.follower_side: cmd})
+        action = {
+            "left": cmd if self.follower_side == "left" else None,
+            "right": cmd if self.follower_side == "right" else None,
+            "base": None,
+            "lift": None,
+        }
+        self.env.step(
+            action,
+            action_mode=self.action_mode,
+            return_observation=False,
+        )
         self._prev_cmd = cmd.copy()
 
         # Expose for Collector
         self._last_command = {
-            "left": cmd.copy() if self.follower_side == "left" else None,
-            "right": cmd.copy() if self.follower_side == "right" else None,
-            "base": None,
-            "lift": None,
+            key: value.copy() if isinstance(value, np.ndarray) else value
+            for key, value in action.items()
         }

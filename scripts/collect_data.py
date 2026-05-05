@@ -45,12 +45,6 @@ def main():
         help="遥操作方式（默认 leader_follower）",
     )
     parser.add_argument(
-        "--action-mode",
-        choices=["delta_eef", "absolute_eef", "absolute_joint"],
-        default="absolute_joint",
-        help="Action mode for ARXEnv. 当前 leader_follower 只支持 absolute_joint.",
-    )
-    parser.add_argument(
         "--leader-side", choices=["left", "right"], default="left",
         help="Leader 臂（默认 left）",
     )
@@ -87,14 +81,14 @@ def main():
         "--deadband", type=float, default=0.004,
         help="死区阈值（默认 0.004）",
     )
+    parser.add_argument(
+        "--action-mode",
+        choices=["absolute_joint"],
+        default="absolute_joint",
+        help="主从采集 action_mode（默认 absolute_joint）",
+    )
 
     args = parser.parse_args()
-
-    # TODO: 后续接入 VR、策略回放等采集方式时，在这里扩展 teleop/action_mode 的合法组合。
-    if args.teleop == "leader_follower" and args.action_mode != "absolute_joint":
-        parser.error(
-            "--teleop leader_follower 当前只支持 --action-mode absolute_joint"
-        )
 
     # ------------------------------------------------------------------
     # 1. Init environment
@@ -102,10 +96,10 @@ def main():
     from arx_toolkit.env import ARXEnv
     from arx_toolkit.collect import Collector
 
-    print(f"[INFO] 当前动作模式 action_mode={args.action_mode}")
-    print(f"[INFO] 初始化 ARXEnv (action_mode={args.action_mode}, camera_type={args.cam_mode})")
+    action_mode = args.action_mode
+    print(f"[INFO] 当前 action_mode={action_mode}")
+    print(f"[INFO] 初始化 ARXEnv (camera_type={args.cam_mode})")
     env = ARXEnv(
-        action_mode=args.action_mode,
         camera_type=args.cam_mode,
         camera_view=("camera_l", "camera_h", "camera_r"),
         img_size=tuple(args.image_size),
@@ -128,6 +122,7 @@ def main():
             control_rate=args.control_rate,
             lowpass_alpha=args.lowpass_alpha,
             deadband=args.deadband,
+            action_mode=action_mode,
         )
 
         def _get_teleop_action() -> dict:
@@ -161,7 +156,7 @@ def main():
             cam_mode=args.cam_mode,
             image_size=tuple(args.image_size),
             task=args.task,
-            action_mode=args.action_mode,
+            action_mode=action_mode,
             save_video=args.save_video,
         )
         collector.run()

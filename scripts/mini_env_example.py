@@ -4,7 +4,6 @@ from arx_toolkit.env import ARXEnv
 import numpy as np
 
 env = ARXEnv(
-    action_mode="absolute_eef",
     camera_type="rgbd",
     camera_view=("camera_h",),
     img_size=(640, 480),
@@ -22,6 +21,6 @@ obs = env.step({
     "right": None,
     "base":  None,
     "lift":  None,
-})
+}, action_mode="absolute_eef")
 
 env.close()

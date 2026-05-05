@@ -9,9 +9,6 @@ Usage (on machine B with hardware):
 
 import argparse
 
-from arx_toolkit.env import ARXEnv
-from arx_toolkit.teleop import LeaderFollowerTeleop
-
 
 def main():
     parser = argparse.ArgumentParser(description="Single-arm leader-follower teleop")
@@ -31,11 +28,19 @@ def main():
         "--deadband", type=float, default=0.004,
         help="Dead-band threshold. Default: 0.004",
     )
+    parser.add_argument(
+        "--action-mode",
+        choices=["absolute_joint"],
+        default="absolute_joint",
+        help="Action mode produced by leader-follower. Default: absolute_joint",
+    )
     args = parser.parse_args()
+
+    from arx_toolkit.env import ARXEnv
+    from arx_toolkit.teleop import LeaderFollowerTeleop
 
     # No camera needed for pure teleop
     env = ARXEnv(
-        action_mode="absolute_joint",
         camera_type="rgb",
         camera_view=(),
     )
@@ -46,6 +51,7 @@ def main():
         control_rate=args.rate,
         lowpass_alpha=args.alpha,
         deadband=args.deadband,
+        action_mode=args.action_mode,
     )
 
     try:

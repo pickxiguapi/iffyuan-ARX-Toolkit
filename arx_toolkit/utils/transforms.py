@@ -1,7 +1,7 @@
 """Quaternion / RPY transform utilities for ARX LIFT2.
 
 Ported from the reference codebase (arx_ros2_env_utils.py), keeping only
-the functions actually needed by the delta_eef action mode.
+the functions needed by EEF action modes.
 """
 
 from __future__ import annotations

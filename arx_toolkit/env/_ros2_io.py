@@ -373,6 +373,8 @@ def build_observation(
                 np.array([s.joint_pos[6] if len(s.joint_pos) > 6 else 0.0], dtype=np.float32),
             ])  # (7,): [x, y, z, r, p, y, gripper_raw]
             obs[f"{side}_joint_pos"] = np.array(s.joint_pos, dtype=np.float32)
+            obs[f"{side}_joint_qvel"] = np.array(s.joint_vel, dtype=np.float32)
+            obs[f"{side}_joint_effort"] = np.array(s.joint_cur, dtype=np.float32)
 
     if include_base and isinstance(status_all, dict):
         base = status_all.get("base")

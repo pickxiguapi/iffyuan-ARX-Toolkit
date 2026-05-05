@@ -143,8 +143,12 @@ def _open_or_create_zarr(
     # --- Robot state ---
     data.require_dataset("left_eef_pos", shape=(0, 7), dtype=np.float32)
     data.require_dataset("left_joint_pos", shape=(0, 7), dtype=np.float32)
+    data.require_dataset("left_joint_qvel", shape=(0, 7), dtype=np.float32)
+    data.require_dataset("left_joint_effort", shape=(0, 7), dtype=np.float32)
     data.require_dataset("right_eef_pos", shape=(0, 7), dtype=np.float32)
     data.require_dataset("right_joint_pos", shape=(0, 7), dtype=np.float32)
+    data.require_dataset("right_joint_qvel", shape=(0, 7), dtype=np.float32)
+    data.require_dataset("right_joint_effort", shape=(0, 7), dtype=np.float32)
     data.require_dataset("base_height", shape=(0, 1), dtype=np.float32)
 
     # --- Actions ---
@@ -195,8 +199,8 @@ class Collector:
     Parameters
     ----------
     env : ARXEnv
-        Fully initialised environment with ``action_mode``, ``camera_type``
-        and ``camera_view`` set as needed.
+        Fully initialised environment with ``camera_type`` and ``camera_view``
+        set as needed.
     action_source : callable
         A function ``() -> dict`` that returns the current action.
         Expected format::
@@ -483,7 +487,9 @@ class Collector:
         # --- Buffer ---
         buffer: dict[str, list] = {
             "left_eef_pos": [], "left_joint_pos": [],
+            "left_joint_qvel": [], "left_joint_effort": [],
             "right_eef_pos": [], "right_joint_pos": [],
+            "right_joint_qvel": [], "right_joint_effort": [],
             "base_height": [],
             "action_left": [], "action_right": [],
             "action_base": [], "action_lift": [],
@@ -550,11 +556,23 @@ class Collector:
             buffer["left_joint_pos"].append(
                 obs.get("left_joint_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
             )
+            buffer["left_joint_qvel"].append(
+                obs.get("left_joint_qvel", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
+            )
+            buffer["left_joint_effort"].append(
+                obs.get("left_joint_effort", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
+            )
             buffer["right_eef_pos"].append(
                 obs.get("right_eef_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
             )
             buffer["right_joint_pos"].append(
                 obs.get("right_joint_pos", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
+            )
+            buffer["right_joint_qvel"].append(
+                obs.get("right_joint_qvel", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
+            )
+            buffer["right_joint_effort"].append(
+                obs.get("right_joint_effort", np.zeros(7, dtype=np.float32)).astype(np.float32)[None]
             )
             buffer["base_height"].append(
                 obs.get("base_height", np.zeros(1, dtype=np.float32)).astype(np.float32).reshape(1, 1)
