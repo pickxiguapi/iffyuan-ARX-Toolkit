@@ -462,9 +462,7 @@ def record_episode_interactive(
     period = 1.0 / max(float(frame_rate), 1e-6)
     quit_requested = False
     last_error_report = 0.0
-    print(
-        "Recording started. Press Enter to stop, or type 'q' then Enter to stop and quit."
-    )
+    print("Recording started. Press Enter to stop.")
 
     buffer = _new_zarr_episode_buffer(save_depth=save_depth)
     steps = 0
@@ -476,9 +474,6 @@ def record_episode_interactive(
         loop_start = time.perf_counter()
         command = _poll_stdin_line()
         if command == "":
-            break
-        if command == "q":
-            quit_requested = True
             break
 
         sample, error = collector.capture_sample()
