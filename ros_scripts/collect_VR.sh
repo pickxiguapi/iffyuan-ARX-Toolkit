@@ -4,31 +4,31 @@ workspace=$(pwd)
 source ~/.bashrc
 
 # CAN
-gnome-terminal -t "can1" -x sudo bash -c "cd ${workspace}; cd ..; cd Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can1.sh; exec bash;"
+gnome-terminal -t "can1" -x sudo bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can1.sh; exec bash;"
 sleep 0.5
-gnome-terminal -t "can3" -x sudo bash -c "cd ${workspace}; cd ..; cd Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can3.sh; exec bash;"
+gnome-terminal -t "can3" -x sudo bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can3.sh; exec bash;"
 sleep 0.5
-gnome-terminal -t "can5" -x sudo bash -c "cd ${workspace}; cd ..; cd Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can5.sh; exec bash;"
+gnome-terminal -t "can5" -x sudo bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/ARX_CAN/arx_can; sudo bash arx_can5.sh; exec bash;"
 
 sleep 2
 
 # Body and lift
-gnome-terminal -t "body_lift" -x bash -c "cd ${workspace}; cd ..; cd Src/LIFT/body/ROS2; source install/setup.bash && ros2 launch arx_lift_controller lift.launch.py; exec bash;"
+gnome-terminal -t "body_lift" -x bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/body/ROS2; source install/setup.bash && ros2 launch arx_lift_controller lift.launch.py; exec bash;"
 
 sleep 2
 
 # VR arm control
-gnome-terminal -t "vr_arms" -x bash -c "cd ${workspace}; cd ..; cd Src/LIFT/ARX_X5/ROS2/X5_ws; source install/setup.bash && ros2 launch arx_x5_controller v2_pos_control.launch.py; exec bash;"
+gnome-terminal -t "vr_arms" -x bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/ARX_X5/ROS2/X5_ws; source install/setup.bash && ros2 launch arx_x5_controller v2_pos_control.launch.py; exec bash;"
 
 sleep 2
 
 # VR SDK
-gnome-terminal -t "unity_tcp" -x bash -c "cd ${workspace}; cd ..; cd Src/LIFT/ARX_VR_SDK/ROS2; source install/setup.bash && ros2 run serial_port serial_port_node; exec bash;"
+gnome-terminal -t "unity_tcp" -x bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/ARX_VR_SDK/ROS2; source install/setup.bash && ros2 run serial_port serial_port_node; exec bash;"
 
 sleep 2
 
 # camera_h
-gnome-terminal -t "h_camera" -x bash -c "cd ${workspace}; cd ..; cd Src/LIFT/realsense; \
+gnome-terminal -t "h_camera" -x bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/realsense; \
   source install/setup.bash && ros2 launch realsense2_camera rs_launch.py \
   align_depth.enable:=true \
   pointcloud.enable:=true \
@@ -51,7 +51,7 @@ gnome-terminal -t "h_camera" -x bash -c "cd ${workspace}; cd ..; cd Src/LIFT/rea
 sleep 1
 
 # camera_l
-gnome-terminal -t "l_camera" -x bash -c "cd ${workspace}; cd ..; cd Src/LIFT/realsense; \
+gnome-terminal -t "l_camera" -x bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/realsense; \
   source install/setup.bash && ros2 launch realsense2_camera rs_launch.py \
   align_depth.enable:=true \
   pointcloud.enable:=true \
@@ -74,7 +74,7 @@ gnome-terminal -t "l_camera" -x bash -c "cd ${workspace}; cd ..; cd Src/LIFT/rea
 sleep 1
 
 # camera_r
-gnome-terminal -t "r_camera" -x bash -c "cd ${workspace}; cd ..; cd Src/LIFT/realsense; \
+gnome-terminal -t "r_camera" -x bash -c "cd ${workspace}; cd ..; cd /home/arx/Arx_Lift2s/Src/LIFT/realsense; \
   source install/setup.bash && ros2 launch realsense2_camera rs_launch.py \
   align_depth.enable:=true \
   pointcloud.enable:=true \
