@@ -111,13 +111,14 @@ Lifecycle
     obs = env.step(action, action_mode="absolute_eef")
     env.close()             # safe shutdown (also registered via atexit)
 
-Convenience methods ``step_base()``, ``step_lift()``, ``step_base_lift()``
-are available but the primary interface is ``step(action, action_mode=...)``.
+``step_arm()`` controls the upper body, and ``step_base_lift()`` controls the
+lower body. The primary interface remains ``step(action, action_mode=...)``.
 """
 
 from __future__ import annotations
 
 import atexit
+import threading
 import time
 from typing import Dict, Iterable, Literal, Optional, Tuple
 
@@ -205,6 +206,7 @@ class ARXEnv:
 
         # ---- Connect via ROS2 ----
         self._init_ros2()
+        self._init_base_lift_state()
 
         atexit.register(self.close)
 
@@ -261,6 +263,98 @@ class ARXEnv:
             pass  # already shutdown or never inited
 
         logger.info("ROS2 shutdown.")
+
+    # ------------------------------------------------------------------
+    # Internal: base/lift command state
+    # ------------------------------------------------------------------
+
+    def _init_base_lift_state(self) -> None:
+        """Initialize non-blocking base/lift command state."""
+        self._base_lift_lock = threading.Lock()
+        self._base_cmd = (0.0, 0.0, 0.0)
+        initial_height = self._read_base_height(default=0.0)
+        self._lift_current = initial_height
+        self._lift_target = initial_height
+        self._lift_stop_event = threading.Event()
+        self._lift_thread: threading.Thread | None = None
+        # Default lift ramp: 50Hz, 0.03 height units per tick.
+        self._lift_rate_hz = 50.0
+        self._lift_speed_per_s = 1.5
+        self._lift_epsilon = 1e-3
+
+    def _read_base_height(self, default: float = 0.0) -> float:
+        try:
+            status = self.node.get_robot_status()
+            base = status.get("base") if isinstance(status, dict) else None
+            return float(base.height) if base is not None else float(default)
+        except Exception:
+            return float(default)
+
+    def _publish_base_lift_once(
+        self,
+        vx: float,
+        vy: float,
+        vz: float,
+        height: float,
+    ) -> bool:
+        """Publish one ROS2 base/lift command."""
+        from arm_control.msg._pos_cmd import PosCmd
+
+        msg = PosCmd()
+        msg.chx = float(vx)
+        msg.chy = float(vy)
+        msg.chz = float(vz)
+        msg.mode1 = 1
+        msg.height = float(np.clip(height, 0.0, 20.0))
+
+        ok = self.node.send_base_msg(msg)
+        if not ok:
+            logger.warning("base_lift command not sent")
+        return ok
+
+    def _ensure_base_lift_smoother(self) -> None:
+        if self._lift_thread is not None and self._lift_thread.is_alive():
+            return
+        self._lift_stop_event.clear()
+        self._lift_thread = threading.Thread(
+            target=self._base_lift_smoother_loop,
+            name="arx_lift_smoother",
+            daemon=True,
+        )
+        self._lift_thread.start()
+
+    def _base_lift_smoother_loop(self) -> None:
+        period = 1.0 / max(self._lift_rate_hz, 1.0)
+        max_step = self._lift_speed_per_s * period
+        while not self._lift_stop_event.is_set():
+            should_publish = False
+            with self._base_lift_lock:
+                target = float(self._lift_target)
+                current = float(self._lift_current)
+                delta = target - current
+                if abs(delta) > self._lift_epsilon:
+                    if abs(delta) <= max_step:
+                        current = target
+                    else:
+                        current += max_step if delta > 0.0 else -max_step
+                    self._lift_current = current
+                    vx, vy, vz = self._base_cmd
+                    should_publish = True
+                else:
+                    vx, vy, vz = self._base_cmd
+
+            if should_publish:
+                self._publish_base_lift_once(vx, vy, vz, current)
+            time.sleep(period)
+
+    def _stop_base_lift_smoother(self) -> None:
+        event = getattr(self, "_lift_stop_event", None)
+        if event is not None:
+            event.set()
+        thread = getattr(self, "_lift_thread", None)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        self._lift_thread = None
 
     # ------------------------------------------------------------------
     # Internal: send arm command
@@ -435,6 +529,24 @@ class ARXEnv:
         return result
 
     @staticmethod
+    def _validate_arm_action(
+        left: np.ndarray | None = None,
+        right: np.ndarray | None = None,
+    ) -> Dict[str, np.ndarray | None]:
+        result: Dict[str, np.ndarray | None] = {}
+        for side, val in (("left", left), ("right", right)):
+            if val is None:
+                result[side] = None
+                continue
+            arr = np.asarray(val, dtype=np.float32).reshape(-1)
+            if arr.shape[0] != 7:
+                raise ValueError(
+                    f"{side} action must have shape (7,), got {arr.shape}"
+                )
+            result[side] = arr
+        return result
+
+    @staticmethod
     def _normalize_action_mode(action_mode: str) -> ActionMode:
         """Validate the public action mode."""
         normalized = str(action_mode).strip().lower()
@@ -535,7 +647,7 @@ class ARXEnv:
         return obs
 
     # ------------------------------------------------------------------
-    # Public API — Step (arm control)
+    # Public API — Step
     # ------------------------------------------------------------------
 
     def step(
@@ -580,12 +692,46 @@ class ARXEnv:
         action = self._validate_action(action)
         action_mode = self._normalize_action_mode(action_mode)
 
-        # -- Arms --
-        arm_action = {}
-        for side in ("left", "right"):
-            if action[side] is not None:
-                arm_action[side] = action[side]
+        if action["left"] is not None or action["right"] is not None:
+            self.step_arm(
+                left=action["left"],
+                right=action["right"],
+                action_mode=action_mode,
+                return_observation=False,
+            )
 
+        # -- Base & Lift --
+        base_val = action["base"]
+        lift_val = action["lift"]
+
+        if base_val is not None or lift_val is not None:
+            vx, vy, vz = (
+                (float(base_val[0]), float(base_val[1]), float(base_val[2]))
+                if base_val is not None
+                else (None, None, None)
+            )
+            self.step_base_lift(vx=vx, vy=vy, vz=vz, height=lift_val)
+
+        if not return_observation:
+            return None
+        return self.get_observation()
+
+    def step_arm(
+        self,
+        left: np.ndarray | None = None,
+        right: np.ndarray | None = None,
+        action_mode: ActionMode | str = "absolute_eef",
+        return_observation: bool = True,
+    ) -> Dict[str, np.ndarray] | None:
+        """Send one arm command for either or both arms."""
+        action = self._validate_arm_action(left=left, right=right)
+        action_mode = self._normalize_action_mode(action_mode)
+
+        arm_action = {
+            side: target
+            for side, target in action.items()
+            if target is not None
+        }
         if arm_action:
             if action_mode == "absolute_joint":
                 self._apply_absolute_joint(arm_action)
@@ -595,14 +741,6 @@ class ARXEnv:
                 self._apply_smooth_eef(arm_action)
             elif action_mode == "delta_eef":
                 self._apply_delta_eef(arm_action)
-
-        # -- Base & Lift --
-        base_val = action["base"]
-        lift_val = action["lift"]
-
-        if base_val is not None or lift_val is not None:
-            vx, vy, vz = (float(base_val[0]), float(base_val[1]), float(base_val[2])) if base_val is not None else (0.0, 0.0, 0.0)
-            self.step_base_lift(vx=vx, vy=vy, vz=vz, height=lift_val)
 
         if not return_observation:
             return None
@@ -614,9 +752,9 @@ class ARXEnv:
 
     def step_base_lift(
         self,
-        vx: float = 0.0,
-        vy: float = 0.0,
-        vz: float = 0.0,
+        vx: float | None = None,
+        vy: float | None = None,
+        vz: float | None = None,
         height: Optional[float] = None,
     ) -> None:
         """Send one combined base chassis + lift command.
@@ -624,52 +762,28 @@ class ARXEnv:
         This is the preferred method for base/lift control.
 
         Args:
-            vx: Forward/backward speed, range [-1.5, 1.5].
-            vy: Left/right speed, range [-1.5, 1.5].
-            vz: Rotation speed, range [-2.0, 2.0].
-            height: Lift height, range [0, 20]. None = keep current.
+            vx: Forward/backward speed, range [-1.5, 1.5]. None = keep current.
+            vy: Left/right speed, range [-1.5, 1.5]. None = keep current.
+            vz: Rotation speed, range [-2.0, 2.0]. None = keep current.
+            height: Lift target height, range [0, 20]. None = keep current.
         """
-        from arm_control.msg._pos_cmd import PosCmd
+        with self._base_lift_lock:
+            cur_vx, cur_vy, cur_vz = self._base_cmd
+            next_vx = cur_vx if vx is None else float(vx)
+            next_vy = cur_vy if vy is None else float(vy)
+            next_vz = cur_vz if vz is None else float(vz)
+            self._base_cmd = (next_vx, next_vy, next_vz)
 
-        msg = PosCmd()
-        msg.chx = float(vx)
-        msg.chy = float(vy)
-        msg.chz = float(vz)
-        msg.mode1 = 1
+            if height is not None:
+                if self._lift_current is None:
+                    self._lift_current = self._read_base_height(default=0.0)
+                self._lift_target = float(np.clip(height, 0.0, 20.0))
 
+            current_height = float(self._lift_current)
+
+        self._publish_base_lift_once(next_vx, next_vy, next_vz, current_height)
         if height is not None:
-            msg.height = float(np.clip(height, 0.0, 20.0))
-        else:
-            status = self.node.get_robot_status()
-            base = status.get("base")
-            msg.height = float(base.height) if base is not None else 0.0
-
-        ok = self.node.send_base_msg(msg)
-        if not ok:
-            logger.warning("base_lift command not sent")
-
-    def step_base(
-        self,
-        vx: float = 0.0,
-        vy: float = 0.0,
-        vz: float = 0.0,
-    ) -> None:
-        """Send one base chassis velocity command (lift unchanged).
-
-        Args:
-            vx: Forward/backward speed, range [-1.5, 1.5].
-            vy: Left/right speed, range [-1.5, 1.5].
-            vz: Rotation speed, range [-2.0, 2.0].
-        """
-        self.step_base_lift(vx=vx, vy=vy, vz=vz, height=None)
-
-    def step_lift(self, height: float) -> None:
-        """Set lift height (base velocity = 0).
-
-        Args:
-            height: Target height, range [0, 20].
-        """
-        self.step_base_lift(vx=0, vy=0, vz=0, height=height)
+            self._ensure_base_lift_smoother()
 
     # ------------------------------------------------------------------
     # Public API — Mode switch
@@ -754,8 +868,7 @@ class ARXEnv:
         time.sleep(1.5)
 
         self._go_home(side="both")
-        self.step_lift(0.0)
-        self.step_base(0.0, 0.0, 0.0)
+        self.step_base_lift(vx=0.0, vy=0.0, vz=0.0, height=0.0)
 
         obs = self.get_observation()
         logger.info("Reset done.")
@@ -769,13 +882,14 @@ class ARXEnv:
 
         logger.info("Closing ...")
         try:
-            self.step_base(0.0, 0.0, 0.0)
+            self.step_base_lift(vx=0.0, vy=0.0, vz=0.0)
             time.sleep(1.0)
             self._go_home(side="both")
-            self.step_lift(0.0)
+            self.step_base_lift(height=0.0)
         except Exception as e:
             logger.warning("Error during close cleanup: %s", e)
 
+        self._stop_base_lift_smoother()
         self._shutdown_ros2()
         logger.info("Closed.")
 
@@ -832,18 +946,18 @@ if __name__ == "__main__":
     print("  left gripper:", obs["left_joint_pos"][6])
     _time.sleep(3.0)
 
-    # ========== 5. step_lift — 升降台 ==========
-    env.step_lift(3.0)
+    # ========== 5. step_base_lift — 只控制升降台 ==========
+    env.step_base_lift(height=3.0)
     obs = env.get_observation(include_camera=False)
-    print("\n[step_lift] height=3")
+    print("\n[step_base_lift] height=3")
     print("  base_height:", obs["base_height"])
     _time.sleep(3.0)
 
-    # ========== 6. step_base — 底盘前进 ==========
-    env.step_base(vx=0.1, vy=0, vz=0)
+    # ========== 6. step_base_lift — 只控制底盘前进 ==========
+    env.step_base_lift(vx=0.1, vy=0, vz=0)
     _time.sleep(1.0)
-    env.step_base(vx=0, vy=0, vz=0)  # 停
-    print("\n[step_base] 前进 1s 后停止")
+    env.step_base_lift(vx=0, vy=0, vz=0)  # 停
+    print("\n[step_base_lift] 前进 1s 后停止")
     _time.sleep(3.0)
 
     # ========== 7. step_base_lift — 联合控制 ==========
@@ -861,7 +975,7 @@ if __name__ == "__main__":
         "lift": 1.0,
     }, action_mode="absolute_joint")
     _time.sleep(1.0)
-    env.step_base(0, 0, 0)  # 停底盘
+    env.step_base_lift(vx=0, vy=0, vz=0)  # 停底盘
     print("\n[step] 底盘横移 + 升降到 1")
     print("  base_height:", obs["base_height"])
     _time.sleep(3.0)

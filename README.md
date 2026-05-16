@@ -196,14 +196,15 @@ env.close()             # 安全关闭（也通过 atexit 自动注册）
 - `close()` 会停底盘、回零双臂、关闭夹爪、释放 ROS2 节点
 - 即使程序异常退出，`atexit` 也会自动调用 `close()`
 
-### 便捷方法
+### 分层控制方法
 
-除了 `step(action, action_mode=...)` 主接口外，还提供独立控制底盘/升降的便捷方法：
+除了 `step(action, action_mode=...)` 主接口外，还提供上肢和下肢的分层入口：
 
 ```python
-env.step_base(vx=0.5, vy=0, vz=0)      # 仅控制底盘
-env.step_lift(height=10)                 # 仅控制升降
-env.step_base_lift(vx=0, vy=0, vz=0.15, height=2.0)  # 底盘+升降联合
+env.step_arm(left=left_action, right=None, action_mode="absolute_eef")  # 仅控制上肢
+env.step_base_lift(vx=0.5, vy=0, vz=0)                                  # 仅控制底盘
+env.step_base_lift(height=10)                                            # 仅控制升降
+env.step_base_lift(vx=0, vy=0, vz=0.15, height=2.0)                      # 底盘+升降联合
 
 env.get_observation(                     # 获取观测（可过滤）
     include_arm=True,
