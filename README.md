@@ -413,10 +413,15 @@ python scripts/teleop_leader_follower.py --alpha 1.0 --deadband 0.0
 ### 方式 B：VR 节点采集准备
 
 VR 控制走底层 ROS2 VR SDK 节点，Toolkit 不再提供浏览器版 VR teleop。采集前先拉起硬件和 VR 节点：
-
+*一定注意，如果你已经拉了all.sh，请先关闭所有all.sh拉起的节点（远程连接桌面关闭）*
 ```bash
 bash scripts/collect_VR.sh
 ```
+现在你可以打开VR，进入arx VR控制软件进行控制。
+你进入后会听见锁定锁定的提示音，左手按住xy，右手按住ab，听到锁定声音结束，左右手一起垂直按下方向遥感，听到控制器已上线，夹爪都完全张开就是可以VR控制了
+
+VR手柄的按键和控制的关系如图所示:
+![VR手柄按键说明](VR_controller.png)
 
 然后另开终端运行 VR Zarr 采集：
 
