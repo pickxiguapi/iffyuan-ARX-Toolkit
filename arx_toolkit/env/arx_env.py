@@ -347,6 +347,19 @@ class ARXEnv:
                 self._publish_base_lift_once(vx, vy, vz, current)
             time.sleep(period)
 
+    def _wait_lift_target(self, timeout: float | None = None) -> bool:
+        """Block until the non-blocking lift smoother reaches its target."""
+        deadline = None if timeout is None else time.monotonic() + float(timeout)
+        period = 1.0 / max(self._lift_rate_hz, 1.0)
+        while True:
+            with self._base_lift_lock:
+                reached = abs(float(self._lift_current) - float(self._lift_target)) <= self._lift_epsilon
+            if reached:
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            time.sleep(min(period, 0.05))
+
     def _stop_base_lift_smoother(self) -> None:
         event = getattr(self, "_lift_stop_event", None)
         if event is not None:
@@ -767,6 +780,7 @@ class ARXEnv:
             vz: Rotation speed, range [-2.0, 2.0]. None = keep current.
             height: Lift target height, range [0, 20]. None = keep current.
         """
+        base_changed = vx is not None or vy is not None or vz is not None
         with self._base_lift_lock:
             cur_vx, cur_vy, cur_vz = self._base_cmd
             next_vx = cur_vx if vx is None else float(vx)
@@ -781,7 +795,8 @@ class ARXEnv:
 
             current_height = float(self._lift_current)
 
-        self._publish_base_lift_once(next_vx, next_vy, next_vz, current_height)
+        if base_changed:
+            self._publish_base_lift_once(next_vx, next_vy, next_vz, current_height)
         if height is not None:
             self._ensure_base_lift_smoother()
 
@@ -869,6 +884,7 @@ class ARXEnv:
 
         self._go_home(side="both")
         self.step_base_lift(vx=0.0, vy=0.0, vz=0.0, height=0.0)
+        self._wait_lift_target(timeout=15.0)
 
         obs = self.get_observation()
         logger.info("Reset done.")
@@ -886,6 +902,7 @@ class ARXEnv:
             time.sleep(1.0)
             self._go_home(side="both")
             self.step_base_lift(height=0.0)
+            self._wait_lift_target(timeout=15.0)
         except Exception as e:
             logger.warning("Error during close cleanup: %s", e)
 

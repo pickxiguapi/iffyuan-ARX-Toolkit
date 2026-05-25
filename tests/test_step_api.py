@@ -107,3 +107,35 @@ def test_step_base_lift_none_components_keep_previous_command(monkeypatch) -> No
     assert sent[-1].chz == 0.1
     assert sent[-1].height == 2.0
     assert env._lift_target == 8.0
+
+
+def test_step_base_lift_lift_only_does_not_publish_old_height(monkeypatch) -> None:
+    sent = []
+    env = make_env()
+    env.node = SimpleNamespace(get_robot_status=lambda: {"base": SimpleNamespace(height=2.0)})
+    env._init_base_lift_state()
+    env._publish_base_lift_once = lambda *args: sent.append(args) or True  # type: ignore[method-assign]
+    env._ensure_base_lift_smoother = lambda: None  # type: ignore[method-assign]
+
+    env.step_base_lift(height=8.0)
+
+    assert sent == []
+    assert env._lift_target == 8.0
+
+
+def test_reset_waits_for_lift_target_before_observation() -> None:
+    env = make_env()
+    calls = []
+    env._go_home = lambda side="both": calls.append(("home", side))  # type: ignore[method-assign]
+    env.step_base_lift = lambda **kwargs: calls.append(("base_lift", kwargs))  # type: ignore[method-assign]
+    env._wait_lift_target = lambda timeout=None: calls.append(("wait", timeout)) or True  # type: ignore[method-assign]
+    env.get_observation = lambda: calls.append(("obs", None)) or {"ok": np.array([1], dtype=np.float32)}  # type: ignore[method-assign]
+
+    env.reset()
+
+    assert calls == [
+        ("home", "both"),
+        ("base_lift", {"vx": 0.0, "vy": 0.0, "vz": 0.0, "height": 0.0}),
+        ("wait", 15.0),
+        ("obs", None),
+    ]
