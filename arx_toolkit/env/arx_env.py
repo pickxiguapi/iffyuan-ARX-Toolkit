@@ -869,6 +869,14 @@ class ARXEnv:
 
         logger.info("%s arm(s) homed (mode=1)", side)
 
+    def _safe_stop_robot(self) -> None:
+        """Stop lower body, home arms, and wait for lift to return to zero."""
+        self.step_base_lift(vx=0.0, vy=0.0, vz=0.0)
+        time.sleep(1.0)
+        self._go_home(side="both")
+        self.step_base_lift(height=0.0)
+        self._wait_lift_target(timeout=15.0)
+
     # ------------------------------------------------------------------
     # Public API — Lifecycle
     # ------------------------------------------------------------------
@@ -881,10 +889,7 @@ class ARXEnv:
         """
         logger.info("Resetting ...")
         time.sleep(1.5)
-
-        self._go_home(side="both")
-        self.step_base_lift(vx=0.0, vy=0.0, vz=0.0, height=0.0)
-        self._wait_lift_target(timeout=15.0)
+        self._safe_stop_robot()
 
         obs = self.get_observation()
         logger.info("Reset done.")
@@ -898,11 +903,7 @@ class ARXEnv:
 
         logger.info("Closing ...")
         try:
-            self.step_base_lift(vx=0.0, vy=0.0, vz=0.0)
-            time.sleep(1.0)
-            self._go_home(side="both")
-            self.step_base_lift(height=0.0)
-            self._wait_lift_target(timeout=15.0)
+            self._safe_stop_robot()
         except Exception as e:
             logger.warning("Error during close cleanup: %s", e)
 

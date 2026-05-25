@@ -126,16 +126,29 @@ def test_step_base_lift_lift_only_does_not_publish_old_height(monkeypatch) -> No
 def test_reset_waits_for_lift_target_before_observation() -> None:
     env = make_env()
     calls = []
-    env._go_home = lambda side="both": calls.append(("home", side))  # type: ignore[method-assign]
-    env.step_base_lift = lambda **kwargs: calls.append(("base_lift", kwargs))  # type: ignore[method-assign]
-    env._wait_lift_target = lambda timeout=None: calls.append(("wait", timeout)) or True  # type: ignore[method-assign]
+    env._safe_stop_robot = lambda: calls.append(("safe_stop", None))  # type: ignore[method-assign]
     env.get_observation = lambda: calls.append(("obs", None)) or {"ok": np.array([1], dtype=np.float32)}  # type: ignore[method-assign]
 
     env.reset()
 
     assert calls == [
-        ("home", "both"),
-        ("base_lift", {"vx": 0.0, "vy": 0.0, "vz": 0.0, "height": 0.0}),
-        ("wait", 15.0),
+        ("safe_stop", None),
         ("obs", None),
+    ]
+
+
+def test_close_uses_safe_stop_without_observation() -> None:
+    env = make_env()
+    calls = []
+    env._safe_stop_robot = lambda: calls.append(("safe_stop", None))  # type: ignore[method-assign]
+    env.get_observation = lambda: calls.append(("obs", None)) or {}  # type: ignore[method-assign]
+    env._stop_base_lift_smoother = lambda: calls.append(("stop_smoother", None))  # type: ignore[method-assign]
+    env._shutdown_ros2 = lambda: calls.append(("shutdown", None))  # type: ignore[method-assign]
+
+    env.close()
+
+    assert calls == [
+        ("safe_stop", None),
+        ("stop_smoother", None),
+        ("shutdown", None),
     ]
