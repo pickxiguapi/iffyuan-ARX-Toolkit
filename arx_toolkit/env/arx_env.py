@@ -277,9 +277,9 @@ class ARXEnv:
         self._lift_target = initial_height
         self._lift_stop_event = threading.Event()
         self._lift_thread: threading.Thread | None = None
-        # Default lift ramp: 50Hz, 0.03 height units per tick.
-        self._lift_rate_hz = 50.0
-        self._lift_speed_per_s = 1.5
+        # Match the legacy ARX_Realenv lift ramp: 0.03 height units per 0.01s.
+        self._lift_rate_hz = 100.0
+        self._lift_speed_per_s = 3.0
         self._lift_epsilon = 1e-3
 
     def _read_base_height(self, default: float = 0.0) -> float:
