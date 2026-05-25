@@ -234,7 +234,7 @@ class LeaderFollowerTeleop:
                     if not self._running:
                         # --- go home & quit ---
                         logger.info("Homing both arms …")
-                        self.env.set_mode(1, side="both")
+                        self.env.go_home(side="both")
                         print("\n  ✓ Both arms homed.\n")
                         return
                     # Space while running: ignore (must pause first)

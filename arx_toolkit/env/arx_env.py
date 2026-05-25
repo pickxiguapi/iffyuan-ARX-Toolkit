@@ -853,21 +853,43 @@ class ARXEnv:
         return cmd
 
     def _go_home(self, side: Side = "both"):
-        """Send mode=1 (home) to the firmware — arms return to factory initial pose.
+        """Move arm EEF targets smoothly to the zero pose.
 
         Args:
             side: Which arm(s) to home.
         """
         targets = ("left", "right") if side == "both" else (side,)
         status = self.node.get_robot_status()
-
+        arm_targets: Dict[str, np.ndarray] = {}
         for target in targets:
-            cmd = self._build_mode_cmd(1, status.get(target))
-            ok = self.node.send_control_msg(target, cmd)
-            if not ok:
-                logger.warning("go_home (mode=1) failed for %s", target)
+            gripper = 0.0
+            try:
+                joint_pos = np.asarray(
+                    status.get(target).joint_pos,
+                    dtype=np.float32,
+                ).reshape(-1)
+                if joint_pos.shape[0] >= 7:
+                    gripper = gripper_normalize(float(joint_pos[6]))
+            except Exception:
+                pass
+            arm_targets[target] = np.array(
+                [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, gripper],
+                dtype=np.float32,
+            )
 
-        logger.info("%s arm(s) homed (mode=1)", side)
+        self.step_arm(
+            left=arm_targets.get("left"),
+            right=arm_targets.get("right"),
+            action_mode="smooth_eef",
+            return_observation=False,
+        )
+        logger.info("%s arm(s) moved to smooth EEF zero pose", side)
+
+    def go_home(self, side: Side = "both") -> None:
+        """Public smooth-EFF home command for one or both arms."""
+        if side not in {"left", "right", "both"}:
+            raise ValueError(f"Invalid side={side!r}")
+        self._go_home(side=side)
 
     def _safe_stop_robot(self) -> None:
         """Stop lower body, home arms, and wait for lift to return to zero."""
@@ -1019,8 +1041,8 @@ if __name__ == "__main__":
     print("\n[set_mode] 左臂 gravity 模式")
     _time.sleep(3.0)
 
-    env.set_mode(1, side="left")   # 左臂回零
-    print("[set_mode] 左臂 home")
+    env.go_home(side="left")       # 左臂平滑回零
+    print("[go_home] 左臂 smooth EEF home")
     _time.sleep(3.0)
 
     # ========== 12. close ==========

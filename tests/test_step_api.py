@@ -152,3 +152,39 @@ def test_close_uses_safe_stop_without_observation() -> None:
         ("stop_smoother", None),
         ("shutdown", None),
     ]
+
+
+def test_go_home_uses_smooth_eef_zero_pose_and_preserves_gripper() -> None:
+    env = make_env()
+    calls = []
+    env.node = SimpleNamespace(
+        get_robot_status=lambda: {
+            "left": SimpleNamespace(joint_pos=np.array([0, 0, 0, 0, 0, 0, -3.4])),
+            "right": SimpleNamespace(joint_pos=np.array([0, 0, 0, 0, 0, 0, 0.0])),
+        }
+    )
+    env.step_arm = lambda **kwargs: calls.append(kwargs)  # type: ignore[method-assign]
+
+    env._go_home(side="both")
+
+    assert len(calls) == 1
+    np.testing.assert_array_equal(
+        calls[0]["left"],
+        np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        calls[0]["right"],
+        np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32),
+    )
+    assert calls[0]["action_mode"] == "smooth_eef"
+    assert calls[0]["return_observation"] is False
+
+
+def test_public_go_home_validates_side_and_uses_private_home() -> None:
+    env = make_env()
+    calls = []
+    env._go_home = lambda side="both": calls.append(side)  # type: ignore[method-assign]
+
+    env.go_home(side="left")
+
+    assert calls == ["left"]

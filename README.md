@@ -217,7 +217,7 @@ env.get_observation(                     # 获取观测（可过滤）
 
 ```python
 env.set_mode(0, side="both")   # 柔顺模式 (soft)
-env.set_mode(1, side="both")   # 回零 (home)
+env.go_home(side="both")       # 平滑回零 (smooth EEF home)
 env.set_mode(2, side="left")   # 保护模式 (protect)
 env.set_mode(3, side="right")  # 重力补偿 / 拖动示教 (gravity)
 ```
