@@ -605,8 +605,8 @@ python scripts/convert_to_lerobot_v3.py \
 ### 其他选项
 
 ```bash
-# 用视频格式存储图像（大数据集推荐，体积缩小 5-10 倍）
-python scripts/convert_to_lerobot_v3.py ... --use-videos
+# 默认用视频格式存储图像（推荐，体积小，兼容 LeRobot v3 训练/可视化）
+python scripts/convert_to_lerobot_v3.py ...
 
 # 只看 Zarr 内容，不转换
 python scripts/convert_to_lerobot_v3.py --zarr datasets/pick_cup.zarr --dry-run
@@ -614,6 +614,17 @@ python scripts/convert_to_lerobot_v3.py --zarr datasets/pick_cup.zarr --dry-run
 # 只转换前 10 个 episode
 python scripts/convert_to_lerobot_v3.py ... --episodes 10
 ```
+
+### 可视化转换结果
+
+```bash
+python scripts/visualize_lerobot_v3.py \
+    --repo-id iffyuan/arx_pick_cup \
+    --dataset-root lerobot_datasets/pick_cup \
+    --episodes random
+```
+
+`--episodes` 支持 `all`、`random`、单个编号（如 `3`）或范围（如 `[1,5]`）。
 
 ### 转换参数
 
@@ -627,7 +638,6 @@ python scripts/convert_to_lerobot_v3.py ... --episodes 10
 | `--state` | — | 非交互: state 字段（逗号分隔） |
 | `--action` | — | 非交互: action 字段（逗号分隔） |
 | `--cameras` | 全选 | 非交互: 相机名（逗号分隔） |
-| `--use-videos` | off | 视频格式存储图像 |
 | `--episodes` | 全部 | 只转换前 N 个 episode |
 | `--dry-run` | off | 只列出数组信息 |
 

@@ -37,8 +37,6 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
-
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -85,11 +83,11 @@ def _get_action_mode(meta_group) -> str:
 
 def _check_deps():
     missing = []
-    for pkg in ("zarr", "lerobot", "PIL"):
+    for pkg in ("zarr", "lerobot"):
         try:
             __import__(pkg)
         except ImportError:
-            missing.append("Pillow" if pkg == "PIL" else pkg)
+            missing.append(pkg)
     if missing:
         print(f"[ERROR] 缺少依赖: {', '.join(missing)}")
         print("  uv pip install -e .")
@@ -109,6 +107,8 @@ def _get_episode_ranges(
     if "episode_ends" in meta_group:
         episode_ends = meta_group["episode_ends"][:]
     else:
+        import numpy as np
+
         print("[WARN] meta/episode_ends 缺失，从 data/episode 自动重建...")
         all_ep = data_group["episode"][:]
         unique_eps = np.unique(all_ep)
@@ -362,11 +362,10 @@ def convert(
     robot_type: str = "arx_lift2",
     task_name: str | None = None,
     max_episodes: int | None = None,
-    use_videos: bool = False,
 ):
     """执行 Zarr → LeRobot v3 转换."""
+    import numpy as np
     import zarr
-    from PIL import Image
 
     try:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -421,17 +420,16 @@ def convert(
         },
     }
 
-    image_feature_dtype = "video" if use_videos else "image"
     for cam in camera_names:
         features[f"observation.images.{cam}"] = {
-            "dtype": image_feature_dtype,
+            "dtype": "video",
             "shape": image_shape,
             "names": ["height", "width", "channel"],
         }
 
     print(f"[INFO] 创建 LeRobot 数据集: repo_id={repo_id}, fps={fps}")
     print(f"[INFO] 输出路径: {output_path}")
-    print(f"[INFO] use_videos={use_videos}")
+    print(f"[INFO] image_storage=video")
     print(f"[INFO] Features: {list(features.keys())}")
 
     dataset = LeRobotDataset.create(
@@ -440,8 +438,7 @@ def convert(
         robot_type=robot_type,
         features=features,
         root=output_path,
-        use_videos=use_videos,
-        image_writer_threads=4,
+        use_videos=True,
     )
 
     # --- 预读辅助函数 ---
@@ -480,12 +477,9 @@ def convert(
 
             # Images: (C, H, W) → (H, W, C)
             for cam in camera_names:
-                img_hwc = cam_batches[cam][i].transpose(1, 2, 0)
-                if use_videos:
-                    # LeRobot v3 视频编码路径使用 ndarray(H, W, C)
-                    frame[f"observation.images.{cam}"] = img_hwc
-                else:
-                    frame[f"observation.images.{cam}"] = Image.fromarray(img_hwc)
+                img_hwc = np.ascontiguousarray(cam_batches[cam][i].transpose(1, 2, 0))
+                # LeRobot v3 视频编码路径使用 ndarray(H, W, C)
+                frame[f"observation.images.{cam}"] = img_hwc
 
             dataset.add_frame(frame)
 
@@ -493,11 +487,10 @@ def convert(
 
     # --- Done ---
     elapsed = time.time() - t0
-    if use_videos:
-        # 清理中间图像目录，避免与 videos 重复占用空间。
-        image_dir = output_path / "images"
-        if image_dir.exists():
-            shutil.rmtree(image_dir, ignore_errors=True)
+    # 清理可能由 LeRobot image writer 留下的中间图像目录，避免与 videos 重复占用空间。
+    image_dir = output_path / "images"
+    if image_dir.exists():
+        shutil.rmtree(image_dir, ignore_errors=True)
 
     print(f"\n{'=' * 60}")
     print(f"[DONE] 转换完成!")
@@ -527,8 +520,6 @@ def main():
     parser.add_argument("--task", default=None, help="任务描述")
     parser.add_argument("--episodes", type=int, default=None,
                         help="只转换前 N 个 episode")
-    parser.add_argument("--use-videos", action="store_true",
-                        help="使用视频格式存储图像（推荐大数据集）")
     parser.add_argument("--dry-run", action="store_true",
                         help="只列出 Zarr 中的数组，不进入选择/转换")
 
@@ -626,7 +617,6 @@ def main():
         robot_type=args.robot_type,
         task_name=args.task,
         max_episodes=args.episodes,
-        use_videos=args.use_videos,
     )
 
 
