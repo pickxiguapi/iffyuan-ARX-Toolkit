@@ -28,6 +28,7 @@ from arx_toolkit.collect.collector import (
     _open_or_create_zarr,
 )
 from arx_toolkit.env import ARXEnv
+from arx_toolkit.env.arx_env import gripper_normalize
 
 
 def _poll_stdin_line() -> Optional[str]:
@@ -53,6 +54,12 @@ def _vr_base_from_msg(msg) -> np.ndarray:
         ],
         dtype=np.float32,
     )
+
+
+def _vr_gripper_from_msg(msg, fallback: float) -> float:
+    if msg is None or not hasattr(msg, "gripper"):
+        return float(fallback)
+    return gripper_normalize(float(getattr(msg, "gripper")))
 
 
 def _extract_camera_frames(
@@ -89,7 +96,7 @@ def _camera_ready(
 
 
 class VRCommandMirror:
-    """Mirror the VR ROS2 PosCmd topics for base command recording."""
+    """Mirror the VR ROS2 PosCmd topics for action/base recording."""
 
     def __init__(
         self,
@@ -185,10 +192,9 @@ class DualVRZarrCollector:
                 raise ValueError(
                     "collect requested depth frames, but env.camera_type is not rgbd"
                 )
-        self.vr_mirror = (
-            VRCommandMirror(left_topic=left_vr_topic, right_topic=right_vr_topic)
-            if self.require_vr
-            else None
+        self.vr_mirror = VRCommandMirror(
+            left_topic=left_vr_topic,
+            right_topic=right_vr_topic,
         )
 
     def readiness(self) -> tuple[bool, list[str]]:
@@ -208,12 +214,11 @@ class DualVRZarrCollector:
             missing.append("right_arm_status")
         if self.include_base and "base_height" not in obs:
             missing.append("base_status")
-        if self.vr_mirror is not None:
-            left_vr, right_vr, _, _ = self.vr_mirror.snapshot()
-            if left_vr is None:
-                missing.append("vr_left")
-            if right_vr is None:
-                missing.append("vr_right")
+        left_vr, right_vr, _, _ = self.vr_mirror.snapshot()
+        if left_vr is None:
+            missing.append("vr_left")
+        if right_vr is None:
+            missing.append("vr_right")
         if self.include_camera:
             missing.extend(_camera_ready(obs, self.camera_names, self.camera_type))
         return len(missing) == 0, missing
@@ -260,11 +265,9 @@ class DualVRZarrCollector:
         ):
             return None, "camera depth frames not ready"
 
-        left_vr = right_vr = None
-        if self.vr_mirror is not None:
-            left_vr, right_vr, _left_stamp, _right_stamp = self.vr_mirror.snapshot()
-            if left_vr is None or right_vr is None:
-                return None, "vr topics not ready"
+        left_vr, right_vr, _left_stamp, _right_stamp = self.vr_mirror.snapshot()
+        if left_vr is None or right_vr is None:
+            return None, "vr topics not ready"
 
         left_qpos = np.asarray(obs["left_joint_pos"], dtype=np.float32).reshape(-1)[:7]
         right_qpos = np.asarray(obs["right_joint_pos"], dtype=np.float32).reshape(-1)[:7]
@@ -298,6 +301,8 @@ class DualVRZarrCollector:
             if self.action_mode == "absolute_joint"
             else right_eef.copy()
         )
+        action_left[6] = _vr_gripper_from_msg(left_vr, action_left[6])
+        action_right[6] = _vr_gripper_from_msg(right_vr, action_right[6])
         action_lift = 0.0
         if self.include_base:
             action_lift = float(action_base[3]) if action_base is not None else 0.0
