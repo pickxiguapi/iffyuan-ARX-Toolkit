@@ -626,6 +626,54 @@ python scripts/visualize_lerobot_v3.py \
 
 `--episodes` 支持 `all`、`random`、单个编号（如 `3`）或范围（如 `[1,5]`）。
 
+### 合并多个 LeRobot v3 数据集
+
+如果同一个任务分多次采集、转换，可以用 merge 脚本合成一个训练数据集。参与合并的数据集必须使用相同的 `observation.state`、`action` 和相机字段。
+
+```bash
+python "scripts/merge_lerobot_datasets.py" \
+    --datasets lerobot_datasets/pick_cup_20260526_101500 \
+               lerobot_datasets/pick_cup_20260526_153000 \
+    --output lerobot_datasets/pick_cup_merged \
+    --repo-id iffyuan/arx_pick_cup
+```
+
+脚本会重写合并后的全局 metadata：
+
+- `data` 中的 `index`、`episode_index`
+- `meta/episodes` 中的 `dataset_from_index`、`dataset_to_index`
+- `meta/episodes` 中的 `data/chunk_index`、`data/file_index`
+- 视频字段的 `file_index`
+- 不同 task 合并时的 `task_index`
+
+这些字段不能只拼接不重写。LeRobot v3 训练会根据 `meta/episodes` 的 frame 范围定位每个 episode；如果后续数据集仍保留局部 `dataset_from_index=0` 之类的值，训练会反复读到前一批数据，常见现象是只有最前面的几条 episode 拟合正常，后面动作预测退化成接近常量或一条直线。
+
+合并完成后建议检查：
+
+```python
+import json
+import pandas as pd
+
+root = "lerobot_datasets/pick_cup_merged"
+info = json.load(open(f"{root}/meta/info.json"))
+eps = pd.read_parquet(f"{root}/meta/episodes/chunk-000/file-000.parquet")
+
+print(info["total_episodes"], info["total_frames"])
+print(eps[[
+    "episode_index",
+    "length",
+    "dataset_from_index",
+    "dataset_to_index",
+    "data/chunk_index",
+    "data/file_index",
+]].head(20))
+
+assert eps["dataset_from_index"].is_monotonic_increasing
+assert int(eps["dataset_to_index"].iloc[-1]) == int(info["total_frames"])
+```
+
+如果使用过旧版 merge 脚本生成数据集，建议删除旧的 merged 输出后重新 merge，再开始训练。
+
 ### 转换参数
 
 | 参数 | 默认 | 说明 |
@@ -724,6 +772,7 @@ iffyuan-ARX-Toolkit/
 │   ├── collect_vr.py             # VR Zarr 采集
 │   ├── collect_VR.sh             # VR 硬件节点启动
 │   ├── convert_to_lerobot_v3.py  # Zarr → LeRobot v3
+│   ├── merge_lerobot_datasets.py  # 合并多个 LeRobot v3 数据集
 │   ├── teleop_leader_follower.py # 主从遥操作
 │   ├── web_control_demo.py       # Web 键盘控制 Demo
 │   └── mini_env_example.py       # 最小环境示例
